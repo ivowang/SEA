@@ -1,0 +1,42 @@
+# Example: ICL Reflexion evolution on WebShop
+# Usage: python scripts/run_evolution.py --config examples/icl_reflexion_webshop/config.yaml
+# Note: Requires WebShop server running at localhost:3000
+
+agent:
+  brain:
+    backend: vllm
+    model: Qwen/Qwen2.5-7B-Instruct
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+    enable_lora: false
+    device: "cuda:0"
+  memory: episodic
+  planner: react
+
+env:
+  name: webshop
+  base_url: http://localhost:3000
+  max_steps_val: 30
+
+evolution:
+  pipeline:
+    num_iterations: 30
+    traj_per_iter: 20
+    eval_every: 5
+    checkpoint_every: 10
+    checkpoint_dir: outputs/icl_reflexion_webshop/checkpoints
+  evolvers:
+    - method: icl
+      target: memory
+      max_reflections_per_step: 5
+      max_exemplars: 10
+      exemplar_selection: diverse
+      extract_skills: true
+
+evaluation:
+  num_episodes: 20
+  temperature: 0.0
+
+metrics:
+  reporters: [console]

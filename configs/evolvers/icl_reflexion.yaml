@@ -1,0 +1,9 @@
+# ICL Reflexion evolution config
+evolution:
+  evolvers:
+    - method: icl
+      target: memory
+      max_reflections_per_step: 5
+      max_exemplars: 10
+      exemplar_selection: diverse
+      extract_skills: false

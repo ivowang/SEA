@@ -1,0 +1,4 @@
+# TextCraft environment config
+env:
+  name: textcraft
+  max_steps_val: 30

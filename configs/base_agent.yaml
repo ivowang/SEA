@@ -1,0 +1,32 @@
+# Base agent configuration
+agent:
+  brain:
+    backend: vllm
+    model: Qwen/Qwen2.5-7B-Instruct
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+    enable_lora: true
+    system_prompt: ""
+  memory: working
+  planner: react
+
+env:
+  name: textcraft
+  max_steps_val: 30
+
+evolution:
+  pipeline:
+    num_iterations: 100
+    traj_per_iter: 64
+    eval_every: 10
+    checkpoint_every: 10
+    checkpoint_dir: outputs/checkpoints
+  evolvers: []
+
+evaluation:
+  num_episodes: 20
+  temperature: 0.0
+
+metrics:
+  reporters: [console]

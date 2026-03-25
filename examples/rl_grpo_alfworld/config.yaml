@@ -1,0 +1,48 @@
+# Example: GRPO RL evolution on ALFWorld
+# Usage: python scripts/run_evolution.py --config examples/rl_grpo_alfworld/config.yaml
+
+agent:
+  brain:
+    backend: vllm
+    model: Qwen/Qwen2.5-7B-Instruct
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+    enable_lora: true
+    device: "cuda:0"
+  memory: semantic
+  planner: react
+
+env:
+  name: alfworld
+  split: eval_out_of_distribution
+  max_steps_val: 50
+
+evolution:
+  pipeline:
+    num_iterations: 50
+    traj_per_iter: 32
+    eval_every: 10
+    checkpoint_every: 10
+    checkpoint_dir: outputs/rl_grpo_alfworld/checkpoints
+  evolvers:
+    - method: rl
+      target: brain
+      algorithm: grpo
+      model_name: Qwen/Qwen2.5-7B-Instruct
+      device: "cuda:1"
+      learning_rate: 1.0e-5
+      num_epochs: 1
+      batch_size: 2
+      gradient_accumulation_steps: 8
+      max_completion_length: 512
+      num_generations: 4
+      output_dir: outputs/rl_grpo_alfworld/rl
+
+evaluation:
+  num_episodes: 30
+  temperature: 0.0
+
+metrics:
+  reporters: [console, tensorboard]
+  tensorboard_dir: runs/rl_grpo_alfworld

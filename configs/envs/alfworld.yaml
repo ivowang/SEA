@@ -1,0 +1,5 @@
+# ALFWorld environment config
+env:
+  name: alfworld
+  split: eval_out_of_distribution
+  max_steps_val: 50

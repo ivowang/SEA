@@ -1,0 +1,46 @@
+# Example: SFT LoRA evolution on TextCraft
+# Usage: python scripts/run_evolution.py --config examples/lora_sft_textcraft/config.yaml
+
+agent:
+  brain:
+    backend: vllm
+    model: Qwen/Qwen2.5-1.5B-Instruct
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+    enable_lora: true
+    device: "cuda:0"
+  memory: working
+  planner: react
+
+env:
+  name: textcraft
+  max_steps_val: 30
+
+evolution:
+  pipeline:
+    num_iterations: 20
+    traj_per_iter: 16
+    eval_every: 5
+    checkpoint_every: 5
+    checkpoint_dir: outputs/lora_sft_textcraft/checkpoints
+  evolvers:
+    - method: sft
+      target: brain
+      model_name: Qwen/Qwen2.5-1.5B-Instruct
+      device: "cuda:1"
+      learning_rate: 2.0e-5
+      num_epochs: 2
+      batch_size: 4
+      gradient_accumulation_steps: 2
+      max_seq_length: 2048
+      reward_threshold: 0.0
+      output_dir: outputs/lora_sft_textcraft/sft
+
+evaluation:
+  num_episodes: 20
+  temperature: 0.0
+
+metrics:
+  reporters: [console, tensorboard]
+  tensorboard_dir: runs/lora_sft_textcraft

@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sea"
+version = "0.1.0"
+description = "SEA: Self-Evolving Agent Research Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # Config & CLI
+    "omegaconf>=2.3",
+    "pydantic>=2.0",
+    "rich>=13.0",
+
+    # LLM Inference
+    "vllm>=0.18.0",
+    "openai>=1.0",
+
+    # Training
+    "transformers>=4.45",
+    "peft>=0.13",
+    "trl>=0.12",
+    "datasets>=3.0",
+    "accelerate>=1.0",
+
+    # Memory / Embeddings
+    "faiss-gpu>=1.7",
+    "sentence-transformers>=3.0",
+
+    # Environments
+    "gymnasium>=1.0",
+
+    # Metrics
+    "tensorboard>=2.18",
+
+    # HTTP client
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+textcraft = ["textcraft"]
+alfworld = ["alfworld>=0.4"]
+wandb = ["wandb>=0.18"]
+openrlhf = ["openrlhf>=0.8"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+sea-evolve = "scripts.run_evolution:main"
+sea-eval = "scripts.run_eval:main"
+sea-serve = "scripts.serve_model:main"
+sea-collect = "scripts.collect_trajectories:main"
+
+[tool.setuptools.packages.find]
+include = ["sea*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

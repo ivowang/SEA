@@ -1,0 +1,16 @@
+# RL GRPO evolution config
+evolution:
+  evolvers:
+    - method: rl
+      target: brain
+      algorithm: grpo
+      device: "cuda:1"
+      learning_rate: 1.0e-5
+      num_epochs: 1
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_completion_length: 512
+      num_generations: 4
+      kl_coeff: 0.1
+      output_dir: outputs/rl_grpo
+      torch_dtype: bfloat16
