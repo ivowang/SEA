@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 160" fill="none">
+  <defs>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+    <linearGradient id="loop" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#a855f7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Wave / sea motif -->
+  <path d="M30 95 Q55 70, 80 95 Q105 120, 130 95 Q155 70, 180 95" stroke="url(#wave)" stroke-width="6" stroke-linecap="round" fill="none"/>
+  <path d="M20 115 Q45 90, 70 115 Q95 140, 120 115 Q145 90, 170 115" stroke="url(#wave)" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/>
+
+  <!-- Circular evolution arrow -->
+  <circle cx="105" cy="58" r="22" stroke="url(#loop)" stroke-width="3.5" fill="none" stroke-dasharray="110 28" stroke-linecap="round"/>
+  <polygon points="125,47 131,55 122,55" fill="#a855f7"/>
+
+  <!-- SEA text -->
+  <text x="200" y="88" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="800" letter-spacing="-2">
+    <tspan fill="#0ea5e9">S</tspan><tspan fill="#4f46e5">E</tspan><tspan fill="#7c3aed">A</tspan>
+  </text>
+
+  <!-- Subtitle -->
+  <text x="200" y="118" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#64748b" letter-spacing="3" font-weight="500">SELF-EVOLVING AGENT</text>
+</svg>
