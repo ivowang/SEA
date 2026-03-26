@@ -28,7 +28,7 @@ dependencies = [
     "accelerate>=1.0",
 
     # Memory / Embeddings
-    "faiss-gpu>=1.7",
+    "faiss-cpu>=1.7",
     "sentence-transformers>=3.0",
 
     # Environments

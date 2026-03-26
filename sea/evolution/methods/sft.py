@@ -42,7 +42,7 @@ class SFTEvolver(Evolver):
         num_epochs: int = 3,
         batch_size: int = 4,
         gradient_accumulation_steps: int = 4,
-        max_seq_length: int = 2048,
+        max_length: int = 2048,
         reward_threshold: float = 0.0,
         output_dir: str = "outputs/sft",
         torch_dtype: str = "bfloat16",
@@ -55,7 +55,7 @@ class SFTEvolver(Evolver):
         self._epochs = num_epochs
         self._batch_size = batch_size
         self._grad_accum = gradient_accumulation_steps
-        self._max_seq_length = max_seq_length
+        self._max_length = max_length
         self._reward_threshold = reward_threshold
         self._output_dir = Path(output_dir)
         self._torch_dtype = torch_dtype
@@ -129,7 +129,7 @@ class SFTEvolver(Evolver):
             per_device_train_batch_size=self._batch_size,
             gradient_accumulation_steps=self._grad_accum,
             learning_rate=self._lr,
-            max_seq_length=self._max_seq_length,
+            max_length=self._max_length,
             logging_steps=10,
             save_strategy="no",
             bf16=True,

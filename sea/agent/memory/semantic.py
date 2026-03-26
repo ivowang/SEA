@@ -47,11 +47,17 @@ class SemanticMemory(Memory, Evolvable[list[dict[str, Any]]]):
         if self._embedder is None:
             try:
                 from sentence_transformers import SentenceTransformer
-                import faiss
+                try:
+                    import faiss
+                except ImportError:
+                    raise ImportError(
+                        "SemanticMemory requires sentence-transformers and faiss. "
+                        "Install with: pip install sentence-transformers faiss-cpu"
+                    )
             except ImportError as e:
                 raise ImportError(
-                    "SemanticMemory requires sentence-transformers and faiss-gpu. "
-                    "Install with: pip install sentence-transformers faiss-gpu"
+                    "SemanticMemory requires sentence-transformers and faiss. "
+                    "Install with: pip install sentence-transformers faiss-cpu"
                 ) from e
             self._embedder = SentenceTransformer(self._embedding_model_name)
             self._index = faiss.IndexFlatIP(self._embedding_dim)

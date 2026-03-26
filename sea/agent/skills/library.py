@@ -47,7 +47,8 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
                 import faiss
             except ImportError as e:
                 raise ImportError(
-                    "SkillLibrary requires sentence-transformers and faiss-gpu."
+                    "SkillLibrary requires sentence-transformers and faiss. "
+                    "Install with: pip install sentence-transformers faiss-cpu"
                 ) from e
             self._embedder = SentenceTransformer(self._embedding_model_name)
             self._rebuild_index()
