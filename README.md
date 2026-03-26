@@ -68,7 +68,7 @@ cd SEA
 pip install -e .
 ```
 
-### 2. Minimal Example — evolve an agent in 40 lines
+### 2. Minimal Example
 
 The following script creates an agent, runs it in a custom environment, collects trajectories, evolves its memory via ICL (Reflexion), and evaluates the improvement. **No GPU required** — it uses an OpenAI-compatible API as the LLM backend.
 
@@ -247,7 +247,7 @@ Built-in benchmarks: **TextCraft** (crafting), **ALFWorld** (household), **WebSh
 
 ## Extending SEA
 
-### Add a new Evolution Method (~50 lines)
+### Add a new Evolution Method
 
 ```python
 from sea.core.registry import EVOLVER_REGISTRY
