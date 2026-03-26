@@ -426,7 +426,7 @@ python scripts/run_evolution.py --config examples/lora_sft_textcraft/config.yaml
 
 ### Plug in your own environment
 
-Implement `SEAEnv` (see [README](README.md#environments)), register with `@ENV_REGISTRY.register("name")`, and reference in config.
+Implement `SEAEnv` (see [README](../README.md#environments)), register with `@ENV_REGISTRY.register("name")`, and reference in config.
 
 ---
 

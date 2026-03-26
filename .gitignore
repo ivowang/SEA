@@ -38,6 +38,9 @@ data/
 *.log
 wandb/
 
+# Claude Code
+CLAUDE.md
+
 # Misc
 .pytest_cache/
 .mypy_cache/
