@@ -26,7 +26,7 @@ SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **ho
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              EvolutionPipeline                       │
+│              EvolutionPipeline                      │
 │        collect → evolve → evaluate → repeat         │
 ├──────────┬──────────┬──────────┬────────────────────┤
 │ Evolvers │ Targets  │ Metrics  │ TrajectoryBuffer   │
@@ -35,16 +35,16 @@ SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **ho
 │          │ Memory / │          │                    │
 │          │ Skill    │          │                    │
 ├──────────┴──────────┴──────────┴────────────────────┤
-│                    SEAAgent                          │
-│  ┌──────┐ ┌───────┐ ┌───────┐ ┌──────┐ ┌────────┐  │
-│  │Brain │ │Memory │ │Planner│ │Skills│ │ Tools  │  │
-│  │(LLM) │ │Epi/Sem│ │ReAct/ │ │Library│ │Registry│  │
-│  │      │ │/Work  │ │LATS   │ │      │ │        │  │
-│  └──┬───┘ └───────┘ └───────┘ └──────┘ └────────┘  │
+│                    SEAAgent                         │
+│  ┌──────┐ ┌───────┐ ┌───────┐ ┌──────┐ ┌────────┐   │
+│  │LLM as│ │Memory │ │Planner│ │Skills│ │Tools   │   │
+│  │Brain │ │Epi/Sem│ │ReAct/ │ │Lib   │ │Registry│   │
+│  │      │ │/Work  │ │LATS   │ │      │ │        │   │
+│  └──┬───┘ └───────┘ └───────┘ └──────┘ └────────┘   │
 ├─────┴───────────────────────────────────────────────┤
 │  LLM Backend                                        │
 │  GPU 0: vLLM inference + LoRA hot-swap              │
-│  GPU 1: HF Trainer (PEFT + TRL) for SFT/RL         │
+│  GPU 1: HF Trainer (PEFT + TRL) for SFT/RL          │
 ├─────────────────────────────────────────────────────┤
 │  Environment Layer: SEAEnv (Gymnasium-style)        │
 │  TextCraft │ ALFWorld │ WebShop │ Custom …          │
