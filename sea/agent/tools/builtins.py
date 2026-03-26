@@ -44,31 +44,6 @@ class CalculatorTool(Tool):
             return ToolResult(output=f"Error: {e}", success=False)
 
 
-@TOOL_REGISTRY.register("finish")
-class FinishTool(Tool):
-    """Signal that the agent has completed the task."""
-
-    @property
-    def name(self) -> str:
-        return "finish"
-
-    @property
-    def description(self) -> str:
-        return "Call this when you have completed the task. Provide your final answer."
-
-    @property
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "answer": {"type": "string", "description": "Final answer"},
-            },
-            "required": ["answer"],
-        }
-
-    def execute(self, answer: str = "", **kwargs: Any) -> ToolResult:
-        return ToolResult(output=answer, metadata={"finished": True})
-
 
 @TOOL_REGISTRY.register("json_parser")
 class JSONParserTool(Tool):

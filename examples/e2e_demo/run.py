@@ -35,7 +35,7 @@ logger = logging.getLogger("e2e_demo")
 # ──────────────────────────────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────────────────────────────
-MODEL_PATH = "/root/models/Qwen2.5-1.5B-Instruct"
+MODEL_PATH = os.environ.get("SEA_MODEL_PATH", "/root/models/Qwen2.5-1.5B-Instruct")
 INFERENCE_GPU = "4"   # vLLM inference
 TRAINING_GPU = "5"    # SFT training
 NUM_COLLECT = 16      # trajectories per iteration
@@ -178,10 +178,8 @@ from sea.agent.brain import LLMBrain
 from sea.agent.memory.episodic import EpisodicMemory
 from sea.agent.planner import ReActPlanner
 from sea.agent.tools.registry import ToolRegistry
-from sea.agent.tools.builtins import FinishTool
 
 tool_reg = ToolRegistry()
-tool_reg.register(FinishTool())
 
 agent = SEAAgent(
     brain=LLMBrain(

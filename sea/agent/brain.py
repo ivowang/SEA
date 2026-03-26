@@ -58,8 +58,8 @@ class LLMBrain(Evolvable[dict[str, Any]]):
         """Generate a response from the LLM."""
         return self.backend.generate(
             messages,
-            temperature=temperature or self.default_temperature,
-            max_tokens=max_tokens or self.default_max_tokens,
+            temperature=temperature if temperature is not None else self.default_temperature,
+            max_tokens=max_tokens if max_tokens is not None else self.default_max_tokens,
             stop=stop,
             lora_name=self.lora_name,
             **kwargs,

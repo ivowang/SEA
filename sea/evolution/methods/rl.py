@@ -118,19 +118,34 @@ class RLEvolver(Evolver):
             torch_dtype=self._torch_dtype,
             load_in_4bit=self._load_in_4bit,
         )
-        current_adapter = getattr(target, "adapter_dir", None)
-        if current_adapter and not Path(current_adapter).exists():
-            current_adapter = None
+        current_adapter = None
+        try:
+            state = target.get_evolvable_state()
+            if isinstance(state, Path) and state.exists():
+                current_adapter = state
+        except Exception:
+            pass
         model = hf.get_trainable_model(
             adapter_path=current_adapter,
             lora_config=self._lora_config,
         )
         tokenizer = hf.get_tokenizer()
 
-        # Define reward function for GRPO
+        # Build reward function for GRPO from configured reward functions
+        reward_fns = self._reward_fns
+
         def reward_fn(completions: list[str], **kwargs) -> list[float]:
-            # Simple: use trajectory reward as signal
-            return [1.0 if "success" in c.lower() else 0.0 for c in completions]
+            if reward_fns:
+                # Use configured reward functions on pseudo-trajectories
+                scores = []
+                for c in completions:
+                    pseudo_traj = Trajectory(total_reward=0, success="success" in c.lower())
+                    score = sum(rf(pseudo_traj) for rf in reward_fns) / len(reward_fns)
+                    scores.append(score)
+                return scores
+            # Default: binary reward based on task completion keywords
+            return [1.0 if any(kw in c.lower() for kw in ["success", "complete", "done", "solved"]) else 0.0
+                    for c in completions]
 
         self._train_step += 1
         run_dir = self._output_dir / f"grpo_step_{self._train_step}"
@@ -198,9 +213,13 @@ class RLEvolver(Evolver):
             torch_dtype=self._torch_dtype,
             load_in_4bit=self._load_in_4bit,
         )
-        current_adapter = getattr(target, "adapter_dir", None)
-        if current_adapter and not Path(current_adapter).exists():
-            current_adapter = None
+        current_adapter = None
+        try:
+            state = target.get_evolvable_state()
+            if isinstance(state, Path) and state.exists():
+                current_adapter = state
+        except Exception:
+            pass
         model = hf.get_trainable_model(
             adapter_path=current_adapter,
             lora_config=self._lora_config,

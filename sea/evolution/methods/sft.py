@@ -106,10 +106,14 @@ class SFTEvolver(Evolver):
             load_in_4bit=self._load_in_4bit,
         )
 
-        # Get current adapter path if evolving LoRA
+        # Get current adapter path from target's evolvable state
         current_adapter = None
-        if hasattr(target, "adapter_dir") and target.adapter_dir.exists():
-            current_adapter = target.adapter_dir
+        try:
+            state = target.get_evolvable_state()
+            if isinstance(state, Path) and state.exists():
+                current_adapter = state
+        except Exception:
+            pass
 
         model = hf.get_trainable_model(
             adapter_path=current_adapter,

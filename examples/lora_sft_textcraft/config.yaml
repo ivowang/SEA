@@ -33,7 +33,7 @@ evolution:
       num_epochs: 2
       batch_size: 4
       gradient_accumulation_steps: 2
-      max_seq_length: 2048
+      max_length: 2048
       reward_threshold: 0.0
       output_dir: outputs/lora_sft_textcraft/sft
 

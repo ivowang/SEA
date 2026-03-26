@@ -9,7 +9,7 @@ build/
 
 # Virtual environments
 .venv/
-env/
+/env/
 
 # IDE
 .vscode/
@@ -28,7 +28,7 @@ checkpoints/
 *.ckpt
 
 # Data
-data/
+/data/
 *.bin
 *.safetensors
 *.pt
@@ -45,3 +45,4 @@ CLAUDE.md
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+env.json

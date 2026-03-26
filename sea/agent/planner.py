@@ -137,20 +137,20 @@ class ReActPlanner(Planner):
         else:
             action_text = response.strip()
 
-        # Check for tool_call pattern
-        tool_match = re.match(r"tool_call\((\w+),\s*(.+)\)", action_text)
+        # Check for tool_call pattern: tool_call(name, args)
+        tool_match = re.match(r"tool_call\((\w+),\s*(.+)\)$", action_text, re.DOTALL)
         if tool_match:
             return Action(
                 text=action_text,
                 action_type="tool_call",
                 metadata={
                     "tool_name": tool_match.group(1),
-                    "tool_args_raw": tool_match.group(2),
+                    "tool_args_raw": tool_match.group(2).rstrip(")"),
                 },
             )
 
-        # Check for finish pattern
-        finish_match = re.match(r"finish\((.+)\)", action_text)
+        # Check for finish pattern: finish(answer)
+        finish_match = re.match(r"finish\((.+)\)$", action_text, re.DOTALL)
         if finish_match:
             return Action(
                 text=finish_match.group(1),

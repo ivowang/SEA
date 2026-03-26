@@ -1,21 +1,30 @@
-"""Episodic memory: time-stamped buffer of experiences."""
+"""Episodic memory: time-stamped buffer of experiences.
+
+This memory is Evolvable — ICL evolvers can add reflections and exemplars.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from sea.agent.memory.base import Memory, MemoryEntry
+from sea.core.base import Evolvable
 from sea.core.registry import MEMORY_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 
 @MEMORY_REGISTRY.register("episodic")
-class EpisodicMemory(Memory):
+class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
     """Stores time-stamped episodic experiences.
 
     Retrieval is by recency and keyword overlap (simple TF matching).
     For embedding-based retrieval, use SemanticMemory instead.
+
+    Implements Evolvable so ICL evolvers can add/modify memory contents.
     """
 
     def __init__(self, max_size: int = 500) -> None:
@@ -36,7 +45,6 @@ class EpisodicMemory(Memory):
         for entry in self._entries:
             content_words = set(entry.content.lower().split())
             overlap = len(query_words & content_words)
-            # Combine keyword overlap with recency
             recency = entry.timestamp
             score = overlap + recency * 1e-12
             entry.score = score
@@ -65,3 +73,19 @@ class EpisodicMemory(Memory):
 
     def state_dict(self) -> dict[str, Any]:
         return {"entries": [e.to_dict() for e in self._entries], "max_size": self._max_size}
+
+    # -- Evolvable --
+
+    def get_evolvable_state(self) -> list[dict[str, Any]]:
+        return [e.to_dict() for e in self._entries]
+
+    def set_evolvable_state(self, state: list[dict[str, Any]]) -> None:
+        self._entries = [MemoryEntry(**d) for d in state]
+        logger.info("Updated episodic memory: %d entries", len(self._entries))
+
+    def evolution_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "episodic_memory",
+            "num_entries": len(self._entries),
+            "max_size": self._max_size,
+        }

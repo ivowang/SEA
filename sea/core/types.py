@@ -34,6 +34,7 @@ class Step:
 
     observation: Observation
     action: Action
+    next_observation: Observation | None = None
     reward: float = 0.0
     done: bool = False
     info: dict[str, Any] = field(default_factory=dict)

@@ -100,8 +100,15 @@ class SEAAgent(Checkpointable):
         env: SEAEnv,
         task_id: str | None = None,
         max_steps: int | None = None,
+        eval_mode: bool = False,
     ) -> Trajectory:
         """Run a complete episode in the given environment.
+
+        Args:
+            env: The environment to interact with.
+            task_id: Optional task identifier.
+            max_steps: Override for max steps per episode.
+            eval_mode: If True, skip memory writes (side-effect-free evaluation).
 
         Returns:
             Trajectory with all steps, total reward, and success flag.
@@ -115,38 +122,40 @@ class SEAAgent(Checkpointable):
 
         trajectory = Trajectory(task_id=actual_task_id)
         trajectory.metadata["start_time"] = time.time()
+        trajectory.metadata["task_description"] = task_desc
 
         for step_num in range(max_steps):
             action = self.act(obs, task_description=task_desc, step=step_num)
 
             # Check if agent wants to finish
-            if action.action_type == "finish" or action.metadata.get("finished"):
-                # Submit final action to env
+            if action.action_type == "finish":
                 obs_next, reward, terminated, truncated, step_info = env.step(action)
-                trajectory.steps.append(
-                    Step(observation=obs, action=action, reward=reward, done=True, info=step_info)
-                )
-                # Store experience in memory
-                self.memory.add(MemoryEntry(
-                    content=f"Step {step_num}: {action.text} -> reward={reward}",
-                    memory_type="episodic",
-                    metadata={"task_id": actual_task_id, "step": step_num},
+                trajectory.steps.append(Step(
+                    observation=obs, action=action, next_observation=obs_next,
+                    reward=reward, done=True, info=step_info,
                 ))
+                if not eval_mode:
+                    self.memory.add(MemoryEntry(
+                        content=f"Step {step_num}: {action.text} -> reward={reward}",
+                        memory_type="episodic",
+                        metadata={"task_id": actual_task_id, "step": step_num},
+                    ))
                 break
 
             obs_next, reward, terminated, truncated, step_info = env.step(action)
             done = terminated or truncated
 
-            trajectory.steps.append(
-                Step(observation=obs, action=action, reward=reward, done=done, info=step_info)
-            )
-
-            # Store experience in memory
-            self.memory.add(MemoryEntry(
-                content=f"Step {step_num}: {action.text} -> {obs_next.text[:200]}",
-                memory_type="episodic",
-                metadata={"task_id": actual_task_id, "step": step_num, "reward": reward},
+            trajectory.steps.append(Step(
+                observation=obs, action=action, next_observation=obs_next,
+                reward=reward, done=done, info=step_info,
             ))
+
+            if not eval_mode:
+                self.memory.add(MemoryEntry(
+                    content=f"Step {step_num}: {action.text} -> {obs_next.text[:200]}",
+                    memory_type="episodic",
+                    metadata={"task_id": actual_task_id, "step": step_num, "reward": reward},
+                ))
 
             if done:
                 break
@@ -154,7 +163,7 @@ class SEAAgent(Checkpointable):
             obs = obs_next
 
         trajectory.compute_total_reward()
-        trajectory.success = trajectory.total_reward > 0 or any(
+        trajectory.success = any(
             s.info.get("success", False) for s in trajectory.steps
         )
         trajectory.metadata["end_time"] = time.time()

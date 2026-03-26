@@ -83,6 +83,7 @@ class Evaluator:
                             env,
                             task_id=task_id,
                             max_steps=self._max_steps,
+                            eval_mode=True,
                         )
                         env_trajs.append(traj)
                     except Exception as e:

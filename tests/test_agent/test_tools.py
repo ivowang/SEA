@@ -1,6 +1,6 @@
 """Tests for tools and tool registry."""
 
-from sea.agent.tools.builtins import CalculatorTool, FinishTool
+from sea.agent.tools.builtins import CalculatorTool
 from sea.agent.tools.registry import ToolRegistry
 
 
@@ -17,22 +17,12 @@ def test_calculator_tool_error():
     assert not result.success
 
 
-def test_finish_tool():
-    finish = FinishTool()
-    result = finish.execute(answer="42")
-    assert result.success
-    assert result.output == "42"
-    assert result.metadata.get("finished") is True
-
-
 def test_tool_registry():
     reg = ToolRegistry()
     reg.register(CalculatorTool())
-    reg.register(FinishTool())
 
-    assert len(reg) == 2
+    assert len(reg) == 1
     assert "calculator" in reg
-    assert "finish" in reg
 
     result = reg.execute("calculator", expression="1+1")
     assert result.output == "2"

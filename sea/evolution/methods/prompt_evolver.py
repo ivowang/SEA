@@ -38,13 +38,9 @@ class PromptEvolver(Evolver):
         self,
         num_variants: int = 3,
         mutation_temperature: float = 0.9,
-        selection_strategy: str = "best",  # "best", "tournament"
-        evaluate_variants: bool = False,
     ) -> None:
         self._num_variants = num_variants
         self._mutation_temp = mutation_temperature
-        self._selection = selection_strategy
-        self._evaluate_variants = evaluate_variants
 
     def requires_trajectories(self) -> bool:
         return True
@@ -71,12 +67,8 @@ class PromptEvolver(Evolver):
             logger.warning("No prompt variants generated")
             return
 
-        # Select best variant
-        if self._evaluate_variants and hasattr(target, "record_performance"):
-            # TODO: mini-evaluation of each variant
-            best = variants[0]
-        else:
-            best = variants[0]  # Use the first (LLM-ranked) variant
+        # Select best variant (first variant from LLM-ranked generation)
+        best = variants[0]
 
         # Update target
         target.set_evolvable_state(best)

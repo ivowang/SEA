@@ -49,7 +49,7 @@ def build_from_config(cfg):
     from sea.agent.planner import ReActPlanner
     from sea.agent.skills.library import SkillLibrary
     from sea.agent.tools.registry import ToolRegistry
-    from sea.agent.tools.builtins import CalculatorTool, FinishTool
+    from sea.agent.tools.builtins import CalculatorTool
     from sea.evolution.pipeline import EvolutionConfig, EvolutionPipeline
     from sea.evolution.targets.lm_params import LoRATarget
     from sea.evolution.targets.prompt import PromptTarget
@@ -83,7 +83,6 @@ def build_from_config(cfg):
 
     tool_registry = ToolRegistry()
     tool_registry.register(CalculatorTool())
-    tool_registry.register(FinishTool())
 
     agent = SEAAgent(
         brain=brain,
@@ -104,18 +103,46 @@ def build_from_config(cfg):
     else:
         envs = [ENV_REGISTRY.build("textcraft")]
 
-    # 4. Build evolvers
+    # 4. Build evolvers and explicit evolution targets
     evo_cfg = cfg.get("evolution", {})
     evolver_cfgs = evo_cfg.get("evolvers", [])
     evolvers = []
+    extra_evolvables: dict[str, Any] = {}  # additional targets not in agent.evolvable_components()
+
     for ev_cfg in evolver_cfgs:
         method = ev_cfg.get("method", "sft")
-        target = ev_cfg.get("target", "brain")
+        target_name = ev_cfg.get("target", "brain")
         ev_kwargs = {k: v for k, v in ev_cfg.items() if k not in ("method", "target")}
-        if "model_name" not in ev_kwargs:
+        if "model_name" not in ev_kwargs and method in ("sft", "rl"):
             ev_kwargs["model_name"] = brain_cfg.get("model", "Qwen/Qwen2.5-7B-Instruct")
+
+        # Build explicit target wrappers for methods that need them
+        if method in ("sft", "rl") and target_name == "brain":
+            # SFT/RL need a LoRATarget, not LLMBrain directly
+            from pathlib import Path as _Path
+            adapter_dir = _Path(ev_kwargs.pop("output_dir", "outputs/lora")) / "adapter_init"
+            lora_target = LoRATarget(
+                base_model_name=ev_kwargs.get("model_name", brain_cfg.get("model", "")),
+                adapter_dir=adapter_dir,
+                lora_config=ev_kwargs.pop("lora_config", None),
+            )
+            target_name = "lora_target"
+            extra_evolvables[target_name] = lora_target
+        elif method == "prompt" and target_name == "brain":
+            prompt_target = PromptTarget(prompt_text=brain.system_prompt)
+            target_name = "prompt_target"
+            extra_evolvables[target_name] = prompt_target
+
         evolver = EVOLVER_REGISTRY.build(method, **ev_kwargs)
-        evolvers.append((evolver, target))
+        evolvers.append((evolver, target_name))
+
+    # Register extra targets so pipeline can find them
+    _orig_evolvable = agent.evolvable_components
+    def _patched_evolvable():
+        result = _orig_evolvable()
+        result.update(extra_evolvables)
+        return result
+    agent.evolvable_components = _patched_evolvable
 
     # 5. Build metrics
     reporters_cfg = cfg.get("metrics", {}).get("reporters", ["console"])
