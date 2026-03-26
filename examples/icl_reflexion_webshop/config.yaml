@@ -1,6 +1,6 @@
 # Example: ICL Reflexion evolution on WebShop
 # Usage: python scripts/run_evolution.py --config examples/icl_reflexion_webshop/config.yaml
-# Note: Requires WebShop server running at localhost:3000
+# Note: Requires WebShop installed (git clone + setup.sh, not a pip package)
 
 agent:
   brain:
@@ -16,8 +16,8 @@ agent:
 
 env:
   name: webshop
-  base_url: http://localhost:3000
   max_steps_val: 30
+  observation_mode: text
 
 evolution:
   pipeline:

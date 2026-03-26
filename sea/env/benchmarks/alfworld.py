@@ -84,7 +84,8 @@ class ALFWorldEnv(SEAEnv):
         return self._max_steps_val
 
     def get_task_ids(self) -> list[str]:
-        # ALFWorld doesn't expose task IDs directly; games are sequential
+        # ALFWorld uses a sequential game pool — task_id is an index hint
+        # but the underlying TextWorld env cycles through games on reset()
         return [f"game_{i}" for i in range(134)]
 
     def reset(
@@ -94,6 +95,9 @@ class ALFWorldEnv(SEAEnv):
         self._step_count = 0
         self._game_count += 1
 
+        # ALFWorld cycles through its game pool sequentially on each reset.
+        # task_id/seed cannot select a specific game — this is a limitation
+        # of the TextWorld-based ALFWorld environment.
         obs, infos = self._env.reset()
 
         # Unwrap batch dimension (batch_size=1)

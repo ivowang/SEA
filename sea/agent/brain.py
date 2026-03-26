@@ -71,10 +71,12 @@ class LLMBrain(Evolvable[dict[str, Any]]):
         **kwargs: Any,
     ) -> list[GenerationOutput]:
         """Generate responses for a batch of message lists."""
+        temp = kwargs.pop("temperature", None)
+        tokens = kwargs.pop("max_tokens", None)
         return self.backend.generate_batch(
             message_batches,
-            temperature=kwargs.pop("temperature", self.default_temperature),
-            max_tokens=kwargs.pop("max_tokens", self.default_max_tokens),
+            temperature=temp if temp is not None else self.default_temperature,
+            max_tokens=tokens if tokens is not None else self.default_max_tokens,
             lora_name=self.lora_name,
             **kwargs,
         )

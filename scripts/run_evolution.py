@@ -93,38 +93,40 @@ def build_from_config(cfg):
     )
 
     # 3. Build environments
+    # OmegaConf returns DictConfig/ListConfig, not plain dict/list
+    from omegaconf import OmegaConf
     env_cfg = cfg.get("env", {})
-    if isinstance(env_cfg, dict):
-        env_name = env_cfg.get("name", "textcraft")
-        env_kwargs = {k: v for k, v in env_cfg.items() if k != "name"}
+    env_cfg_raw = OmegaConf.to_container(env_cfg, resolve=True) if hasattr(env_cfg, '_metadata') else env_cfg
+    if isinstance(env_cfg_raw, dict):
+        env_name = env_cfg_raw.get("name", "textcraft")
+        env_kwargs = {k: v for k, v in env_cfg_raw.items() if k != "name"}
         envs = [ENV_REGISTRY.build(env_name, **env_kwargs)]
-    elif isinstance(env_cfg, list):
-        envs = [ENV_REGISTRY.build(e["name"], **{k: v for k, v in e.items() if k != "name"}) for e in env_cfg]
+    elif isinstance(env_cfg_raw, list):
+        envs = [ENV_REGISTRY.build(e["name"], **{k: v for k, v in e.items() if k != "name"}) for e in env_cfg_raw]
     else:
         envs = [ENV_REGISTRY.build("textcraft")]
 
     # 4. Build evolvers and explicit evolution targets
     evo_cfg = cfg.get("evolution", {})
-    evolver_cfgs = evo_cfg.get("evolvers", [])
+    evolver_cfgs_raw = OmegaConf.to_container(evo_cfg.get("evolvers", []), resolve=True) if hasattr(evo_cfg, '_metadata') else evo_cfg.get("evolvers", [])
     evolvers = []
-    extra_evolvables: dict[str, Any] = {}  # additional targets not in agent.evolvable_components()
+    extra_evolvables: dict[str, Any] = {}
 
-    for ev_cfg in evolver_cfgs:
-        method = ev_cfg.get("method", "sft")
-        target_name = ev_cfg.get("target", "brain")
-        ev_kwargs = {k: v for k, v in ev_cfg.items() if k not in ("method", "target")}
+    for ev_cfg_item in evolver_cfgs_raw:
+        method = ev_cfg_item.get("method", "sft")
+        target_name = ev_cfg_item.get("target", "brain")
+        ev_kwargs = {k: v for k, v in ev_cfg_item.items() if k not in ("method", "target")}
         if "model_name" not in ev_kwargs and method in ("sft", "rl"):
             ev_kwargs["model_name"] = brain_cfg.get("model", "Qwen/Qwen2.5-7B-Instruct")
 
         # Build explicit target wrappers for methods that need them
         if method in ("sft", "rl") and target_name == "brain":
-            # SFT/RL need a LoRATarget, not LLMBrain directly
             from pathlib import Path as _Path
-            adapter_dir = _Path(ev_kwargs.pop("output_dir", "outputs/lora")) / "adapter_init"
+            adapter_dir = _Path(ev_kwargs.get("output_dir", "outputs/lora")) / "adapter_init"
             lora_target = LoRATarget(
                 base_model_name=ev_kwargs.get("model_name", brain_cfg.get("model", "")),
                 adapter_dir=adapter_dir,
-                lora_config=ev_kwargs.pop("lora_config", None),
+                lora_config=ev_kwargs.get("lora_config"),
             )
             target_name = "lora_target"
             extra_evolvables[target_name] = lora_target

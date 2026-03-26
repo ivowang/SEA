@@ -131,19 +131,12 @@ class RLEvolver(Evolver):
         )
         tokenizer = hf.get_tokenizer()
 
-        # Build reward function for GRPO from configured reward functions
-        reward_fns = self._reward_fns
-
+        # Build reward function for GRPO.
+        # NOTE: TRL's GRPOTrainer calls reward_fn on model-generated completions
+        # (strings), not on environment trajectories. For proper environment-based
+        # reward, use the offline DPO path instead, or implement a custom
+        # GRPOTrainer that collects env rollouts.
         def reward_fn(completions: list[str], **kwargs) -> list[float]:
-            if reward_fns:
-                # Use configured reward functions on pseudo-trajectories
-                scores = []
-                for c in completions:
-                    pseudo_traj = Trajectory(total_reward=0, success="success" in c.lower())
-                    score = sum(rf(pseudo_traj) for rf in reward_fns) / len(reward_fns)
-                    scores.append(score)
-                return scores
-            # Default: binary reward based on task completion keywords
             return [1.0 if any(kw in c.lower() for kw in ["success", "complete", "done", "solved"]) else 0.0
                     for c in completions]
 
