@@ -20,7 +20,7 @@
 
 ## Why SEA?
 
-Existing agent frameworks focus on *using* agents. SEA focuses on **evolving** them.
+Existing agent frameworks focus on *using* agents. SEA **evolves** them.
 
 SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **how it evolves** (SFT, RL, in-context learning, prompt optimization), letting researchers freely combine evolution methods and targets in a single config file.
 
@@ -50,19 +50,6 @@ SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **ho
 │  TextCraft │ ALFWorld │ WebShop │ Custom …          │
 └─────────────────────────────────────────────────────┘
 ```
-
-### Key Features
-
-| Feature | Description |
-|---|---|
-| **Evolution-first design** | `Evolvable[T]` protocol makes any component an evolution target |
-| **Method-target decoupling** | Any `Evolver` works with any compatible `Evolvable` target |
-| **LoRA hot-swap** | Train a new adapter on GPU 1, hot-swap into vLLM on GPU 0 — zero downtime |
-| **4 built-in evolvers** | SFT, RL (GRPO/DPO), ICL (Reflexion), Prompt (SCOPE/EvoPrompt) |
-| **4 evolution targets** | LM parameters (LoRA), system prompt, memory, skill library |
-| **3 benchmarks** | TextCraft, ALFWorld, WebShop — all widely used in agent evolution papers |
-| **Plug-in everything** | `@REGISTRY.register("name")` + one YAML line to use your custom component |
-| **Real-time metrics** | Console, TensorBoard, and W&B reporters track evolution progress |
 
 ---
 
@@ -373,16 +360,7 @@ sea/
 
 ---
 
-## Documentation
-
-| Document | Description |
-|---|---|
-| **[Tutorial](docs/TUTORIAL.md)** | Step-by-step guide to your first evolution experiment (English + Chinese) |
-| **[中文文档](docs/README_zh.md)** | Full Chinese documentation |
-
----
-
-## Scripts
+## Scripts with Examples
 
 | Script | Description |
 |---|---|
@@ -393,32 +371,9 @@ sea/
 
 ---
 
-## Examples
-
 | Example | Method | Target | Environment | Config |
 |---|---|---|---|---|
 | LoRA SFT | SFT | LM weights (LoRA) | TextCraft | `examples/lora_sft_textcraft/config.yaml` |
 | RL GRPO | GRPO | LM weights (LoRA) | ALFWorld | `examples/rl_grpo_alfworld/config.yaml` |
 | ICL Reflexion | ICL | Memory | WebShop | `examples/icl_reflexion_webshop/config.yaml` |
 | **E2E Demo** | SFT | LM weights (LoRA) | Simple Tasks | `examples/e2e_demo/run.py` |
-
----
-
-## Citation
-
-If you use SEA in your research, please cite:
-
-```bibtex
-@software{sea2025,
-  title  = {SEA: Self-Evolving Agent Platform},
-  author = {Ivo Wang},
-  year   = {2025},
-  url    = {https://github.com/ivowang/SEA},
-}
-```
-
----
-
-## License
-
-MIT
