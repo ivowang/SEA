@@ -1,0 +1,36 @@
+# SEA: Self-Evolving Agent Platform
+# Tested with Python 3.11, CUDA 12.x
+#
+# Install:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+
+# ── LLM Inference ─────────────────────────────────
+vllm>=0.18.0
+openai>=1.0
+
+# ── Training ──────────────────────────────────────
+transformers>=4.45
+peft>=0.13
+trl>=0.12
+datasets>=3.0
+accelerate>=1.0
+
+# ── Memory / Embeddings ──────────────────────────
+faiss-cpu>=1.7
+sentence-transformers>=3.0
+
+# ── Config & CLI ──────────────────────────────────
+omegaconf>=2.3
+pydantic>=2.0
+rich>=13.0
+
+# ── Environments ──────────────────────────────────
+gymnasium>=1.0
+
+# ── Metrics ───────────────────────────────────────
+tensorboard>=2.18
+
+# ── HTTP ──────────────────────────────────────────
+httpx>=0.27
+numpy
