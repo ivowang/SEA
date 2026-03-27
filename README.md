@@ -373,9 +373,7 @@ sea/
 
 | Example | Method | Target | Environment | Tutorial |
 |---|---|---|---|---|
-| **E2E SFT Demo** | SFT | LM weights (LoRA) | Simple Tasks | [Tutorial](docs/TUTORIAL.md) |
-| **Memory Evolution** | ICL (Reflexion) | Episodic Memory | Riddle Room | [Tutorial](docs/TUTORIAL_MEMORY.md) |
-| **Skill Evolution** | Custom Evolver | Skill Library | Recipe Kitchen | [Tutorial](docs/TUTORIAL_SKILLS.md) |
-| LoRA SFT | SFT | LM weights (LoRA) | TextCraft | `examples/lora_sft_textcraft/config.yaml` |
-| RL GRPO | GRPO | LM weights (LoRA) | ALFWorld | `examples/rl_grpo_alfworld/config.yaml` |
-| ICL Reflexion | ICL | Memory | WebShop | `examples/icl_reflexion_webshop/config.yaml` |
+| **SFT on TextCraft** | SFT (LoRA) | LM weights | TextCraft | [Tutorial](docs/TUTORIAL_SFT.md) |
+| **RL on TextCraft** | GRPO (LoRA) | LM weights | TextCraft | [Tutorial](docs/TUTORIAL_RL.md) |
+| **Memory Evolution** | ICL (Reflexion) | Episodic Memory | TextCraft | [Tutorial](docs/TUTORIAL_MEMORY.md) |
+| **Skill Evolution** | Custom Evolver | Skill Library | TextCraft | [Tutorial](docs/TUTORIAL_SKILLS.md) |
