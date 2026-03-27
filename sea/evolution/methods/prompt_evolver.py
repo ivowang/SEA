@@ -51,6 +51,7 @@ class PromptEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        **kwargs,
     ) -> None:
         current_prompt = target.get_evolvable_state()
         if not isinstance(current_prompt, str):

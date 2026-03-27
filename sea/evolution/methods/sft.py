@@ -72,6 +72,7 @@ class SFTEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        **kwargs,
     ) -> None:
         # 1. Filter successful trajectories
         good_trajs = [

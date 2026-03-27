@@ -31,6 +31,7 @@ class Evolver(Checkpointable):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        **kwargs,
     ) -> None:
         """Execute one evolution step.
 
@@ -41,6 +42,7 @@ class Evolver(Checkpointable):
             target: The specific component to evolve.
             trajectories: Recently collected trajectories.
             metrics: Metrics tracker for logging.
+            **kwargs: Additional context (e.g., envs for RL evolvers).
         """
         ...
 

@@ -59,6 +59,7 @@ class ICLEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        **kwargs,
     ) -> None:
         reflections_added = 0
         exemplars_added = 0

@@ -106,7 +106,8 @@ class EvolutionPipeline:
                     iteration, target_name, type(evolver).__name__,
                 )
                 try:
-                    evolver.evolve(self.agent, target, trajectories, self.metrics)
+                    evolver.evolve(self.agent, target, trajectories, self.metrics,
+                                   envs=self.envs)
                 except Exception as e:
                     logger.error("Evolution failed for '%s': %s", target_name, e, exc_info=True)
 
