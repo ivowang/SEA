@@ -33,7 +33,7 @@ MODEL = os.environ.get("SEA_MODEL", "openai/gpt-5.4-nano")
 
 NUM_ITERATIONS = 4
 NUM_COLLECT = 12
-NUM_EVAL = 10
+NUM_EVAL = 20
 
 # ── Build components ──────────────────────────────────────────────────
 from sea.llm.api_backend import APIBackend

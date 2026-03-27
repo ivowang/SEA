@@ -32,7 +32,8 @@ class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
         self._max_size = max_size
 
     def add(self, entry: MemoryEntry) -> None:
-        entry.memory_type = "episodic"
+        if not entry.memory_type:
+            entry.memory_type = "episodic"
         self._entries.append(entry)
         if len(self._entries) > self._max_size:
             self._entries = self._entries[-self._max_size :]
@@ -45,8 +46,14 @@ class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
         for entry in self._entries:
             content_words = set(entry.content.lower().split())
             overlap = len(query_words & content_words)
+            if overlap == 0:
+                continue  # skip completely irrelevant entries
+            # Boost reflections and exemplars over raw episodic logs
+            type_boost = 0.0
+            if entry.memory_type in ("reflection", "semantic"):
+                type_boost = 3.0
             recency = entry.timestamp
-            score = overlap + recency * 1e-12
+            score = overlap + type_boost + recency * 1e-12
             entry.score = score
             scored.append((score, entry))
         scored.sort(key=lambda x: x[0], reverse=True)

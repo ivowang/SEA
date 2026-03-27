@@ -33,7 +33,7 @@ MODEL = os.environ.get("SEA_MODEL", "openai/gpt-5.4-nano")
 
 NUM_ITERATIONS = 4
 NUM_COLLECT = 12
-NUM_EVAL = 10
+NUM_EVAL = 20
 
 # ── Custom SkillExtractEvolver ────────────────────────────────────────
 from sea.core.registry import EVOLVER_REGISTRY

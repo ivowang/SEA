@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sea.agent.brain import LLMBrain
-from sea.agent.memory.base import Memory, MemoryEntry
+from sea.agent.memory.base import Memory
 from sea.agent.planner import Planner, PlanningContext
 from sea.agent.skills.library import SkillLibrary
 from sea.agent.tools.base import ToolResult
@@ -134,12 +134,6 @@ class SEAAgent(Checkpointable):
                     observation=obs, action=action, next_observation=obs_next,
                     reward=reward, done=True, info=step_info,
                 ))
-                if not eval_mode:
-                    self.memory.add(MemoryEntry(
-                        content=f"Step {step_num}: {action.text} -> reward={reward}",
-                        memory_type="episodic",
-                        metadata={"task_id": actual_task_id, "step": step_num},
-                    ))
                 break
 
             obs_next, reward, terminated, truncated, step_info = env.step(action)
@@ -149,13 +143,6 @@ class SEAAgent(Checkpointable):
                 observation=obs, action=action, next_observation=obs_next,
                 reward=reward, done=done, info=step_info,
             ))
-
-            if not eval_mode:
-                self.memory.add(MemoryEntry(
-                    content=f"Step {step_num}: {action.text} -> {obs_next.text[:200]}",
-                    memory_type="episodic",
-                    metadata={"task_id": actual_task_id, "step": step_num, "reward": reward},
-                ))
 
             if done:
                 break

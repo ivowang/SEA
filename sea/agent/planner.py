@@ -107,14 +107,15 @@ class ReActPlanner(Planner):
 
         messages.append({"role": "system", "content": "\n".join(system_parts)})
 
-        # Retrieved memories
+        # Retrieved memories (limit to 3, truncate each to keep context clean)
         if context.retrieved_memories:
             mem_parts = []
-            for m in context.retrieved_memories:
-                mem_parts.append(f"- {m.content}")
+            for m in context.retrieved_memories[:3]:
+                text = m.content[:200]
+                mem_parts.append(f"- [{m.memory_type}] {text}")
             messages.append({
                 "role": "system",
-                "content": "Relevant memories:\n" + "\n".join(mem_parts),
+                "content": "Relevant past experience:\n" + "\n".join(mem_parts),
             })
 
         # Conversation history

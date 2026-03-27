@@ -117,25 +117,31 @@ class ICLEvolver(Evolver):
 
     def _generate_reflection(self, agent: SEAAgent, traj: Trajectory) -> str:
         """Use the agent's brain to reflect on a failed trajectory."""
-        steps_summary = "\n".join(
-            f"Step {i}: Action='{s.action.text}' -> Reward={s.reward}"
-            for i, s in enumerate(traj.steps[-8:])
-        )
+        steps_summary = []
+        for i, s in enumerate(traj.steps[-8:]):
+            line = f"Step {i}: Action='{s.action.text}'"
+            if s.next_observation:
+                line += f" -> Result: {s.next_observation.text[:150]}"
+            line += f" (reward={s.reward})"
+            steps_summary.append(line)
+
+        task_desc = traj.metadata.get("task_description", traj.task_id)
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You are analyzing a failed agent trajectory. "
-                    "Provide a concise reflection on what went wrong and "
-                    "what should be done differently. Be specific and actionable."
+                    "Provide a concise, specific reflection: what went wrong "
+                    "and what exact actions should be taken instead. "
+                    "Reference specific items, recipes, or steps."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Task: {traj.task_id}\n"
+                    f"Goal: {task_desc}\n"
                     f"Total reward: {traj.total_reward}\n"
-                    f"Steps ({len(traj)}):\n{steps_summary}\n\n"
+                    f"Steps ({len(traj)}):\n" + "\n".join(steps_summary) + "\n\n"
                     "What went wrong and what should be done differently?"
                 ),
             },
