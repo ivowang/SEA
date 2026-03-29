@@ -56,6 +56,10 @@ class TrajectoryBuffer:
     def all(self) -> list[Trajectory]:
         return list(self._buffer)
 
+    def by_task_type(self, task_type: str) -> list[Trajectory]:
+        """Return trajectories of a specific task type."""
+        return [t for t in self._buffer if t.task_type == task_type]
+
     def clear(self) -> None:
         self._buffer.clear()
 
@@ -87,10 +91,17 @@ class TrajectoryCollector:
         envs: list[SEAEnv],
         n: int,
         task_ids: list[str] | None = None,
+        task_type_filter: str | None = None,
     ) -> list[Trajectory]:
         """Collect n trajectories across the given environments.
 
-        Distributes tasks round-robin across environments.
+        Args:
+            agent: Agent to collect with.
+            envs: Environments to interact with.
+            n: Number of trajectories to collect.
+            task_ids: Optional specific task IDs to use.
+            task_type_filter: If set, only collect from tasks of this type.
+                Requires the env's reset() to return task_type in info dict.
         """
         trajectories: list[Trajectory] = []
 

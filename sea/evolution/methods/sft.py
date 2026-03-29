@@ -48,6 +48,8 @@ class SFTEvolver(Evolver):
         torch_dtype: str = "bfloat16",
         load_in_4bit: bool = False,
         lora_config: dict[str, Any] | None = None,
+        trainer_callbacks: list | None = None,
+        model_init_fn: Any | None = None,
     ) -> None:
         self._model_name = model_name
         self._device = device
@@ -60,6 +62,8 @@ class SFTEvolver(Evolver):
         self._output_dir = Path(output_dir)
         self._torch_dtype = torch_dtype
         self._load_in_4bit = load_in_4bit
+        self._trainer_callbacks = trainer_callbacks
+        self._model_init_fn = model_init_fn
         self._lora_config = lora_config
         self._train_step = 0
 
@@ -141,11 +145,20 @@ class SFTEvolver(Evolver):
             remove_unused_columns=False,
         )
 
+        # Apply custom model init if provided (e.g., O-LoRA setup)
+        if self._model_init_fn:
+            model = self._model_init_fn(model)
+
+        trainer_kwargs: dict[str, Any] = {}
+        if self._trainer_callbacks:
+            trainer_kwargs["callbacks"] = self._trainer_callbacks
+
         trainer = SFTTrainer(
             model=model,
             args=training_config,
             train_dataset=dataset,
             processing_class=tokenizer,
+            **trainer_kwargs,
         )
 
         logger.info("Starting SFT training: %d samples, %d epochs", len(dataset), self._epochs)

@@ -161,6 +161,9 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
     def _dict_to_skill(d: dict[str, Any]) -> Skill:
         if "source_code" in d:
             return CodeSkill.from_dict(d)
+        elif "sub_skills" in d or "composition_plan" in d:
+            from sea.agent.skills.code_skill import ComposedSkill
+            return ComposedSkill.from_dict(d)
         elif "instructions" in d:
             return TextSkill.from_dict(d)
         else:

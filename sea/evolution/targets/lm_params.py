@@ -40,6 +40,9 @@ class LoRATarget(Evolvable[Path]):
             "task_type": "CAUSAL_LM",
         }
         self._version = 0
+        # Multi-adapter tracking for continual learning
+        self.adapter_history: dict[str, Path] = {}  # task_type -> adapter path
+        self.r_sum: int = 0  # accumulated rank for O-LoRA
 
     @property
     def current_path(self) -> Path:
@@ -88,6 +91,15 @@ class LoRATarget(Evolvable[Path]):
         self._version += 1
         logger.info("LoRA target updated to %s (version %d)", self.adapter_dir, self._version)
 
+    def register_task_adapter(self, task_type: str, adapter_path: Path) -> None:
+        """Record an adapter checkpoint for a specific task type (continual learning)."""
+        self.adapter_history[task_type] = adapter_path
+        logger.info("Registered adapter for task '%s': %s", task_type, adapter_path)
+
+    def get_task_adapter(self, task_type: str) -> Path | None:
+        """Get the adapter path for a specific task type."""
+        return self.adapter_history.get(task_type)
+
     def evolution_metadata(self) -> dict[str, Any]:
         return {
             "type": "lora_adapter",
@@ -95,6 +107,8 @@ class LoRATarget(Evolvable[Path]):
             "adapter_dir": str(self.adapter_dir),
             "version": self._version,
             "lora_config": self.lora_config,
+            "r_sum": self.r_sum,
+            "task_history": list(self.adapter_history.keys()),
         }
 
     # -- Checkpointable --

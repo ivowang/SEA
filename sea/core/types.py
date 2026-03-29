@@ -46,6 +46,7 @@ class Trajectory:
 
     steps: list[Step] = field(default_factory=list)
     task_id: str = ""
+    task_type: str = ""  # task category (e.g., "pick", "clean" in ALFWorld)
     total_reward: float = 0.0
     success: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)

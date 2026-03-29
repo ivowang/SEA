@@ -70,6 +70,14 @@ class SEAEnv(ABC):
         """Maximum steps per episode. Override in subclasses."""
         return 50
 
+    def get_task_types(self) -> list[str]:
+        """Return available task types/categories. Optional.
+
+        Environments with distinct task categories (e.g., ALFWorld's pick/clean/heat)
+        should override this. Used for task-type-filtered evolution (e.g., continual learning).
+        """
+        return []
+
     def close(self) -> None:
         """Clean up resources. Override if needed."""
         pass

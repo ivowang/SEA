@@ -111,3 +111,48 @@ class TextSkill(Skill):
             tags=data.get("tags", []),
             examples=data.get("examples", []),
         )
+
+
+class ComposedSkill(TextSkill):
+    """A higher-level skill composed from atomic sub-skills.
+
+    Represents a multi-step procedure built by combining simpler skills.
+    E.g., "clean_and_place = navigate(obj) → pick(obj) → clean(obj) → put(obj, dest)"
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        composition_plan: str,
+        sub_skills: list[str],
+        tags: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            name=name,
+            description=description,
+            instructions=composition_plan,
+            tags=tags,
+        )
+        self._info.sub_skills = sub_skills
+        self._info.composition_plan = composition_plan
+
+    def to_prompt(self) -> str:
+        """Concise prompt — just name and plan, not verbose instructions."""
+        return f"[Composed Skill] {self.name}: {self.description}\n  Plan: {self._info.composition_plan}"
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["sub_skills"] = self._info.sub_skills
+        d["composition_plan"] = self._info.composition_plan
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ComposedSkill:
+        return cls(
+            name=data["name"],
+            description=data.get("description", ""),
+            composition_plan=data.get("composition_plan", data.get("instructions", "")),
+            sub_skills=data.get("sub_skills", []),
+            tags=data.get("tags", []),
+        )

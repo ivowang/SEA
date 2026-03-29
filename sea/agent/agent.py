@@ -122,7 +122,10 @@ class SEAAgent(Checkpointable):
         task_desc = info.get("task_description", "")
         actual_task_id = info.get("task_id", task_id or "")
 
-        trajectory = Trajectory(task_id=actual_task_id)
+        trajectory = Trajectory(
+            task_id=actual_task_id,
+            task_type=info.get("task_type", ""),
+        )
         trajectory.metadata["start_time"] = time.time()
         trajectory.metadata["task_description"] = task_desc
 

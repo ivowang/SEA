@@ -18,6 +18,8 @@ class SkillInfo:
     description: str
     tags: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
+    sub_skills: list[str] = field(default_factory=list)  # names of constituent skills
+    composition_plan: str = ""  # natural language plan for composed skills
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
