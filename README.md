@@ -12,8 +12,7 @@
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#architecture">Architecture</a> &bull;
   <a href="#extending-sea">Extending SEA</a> &bull;
-  <a href="docs/README_zh.md">中文文档</a> &bull;
-  <a href="docs/TUTORIAL.md">Tutorial</a>
+  <a href="docs/README_zh.md">中文文档</a>
 </p>
 
 ---
@@ -60,17 +59,11 @@ SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **ho
 ```bash
 conda create -n sea python=3.11 -y
 conda activate sea
-
-# Install PyTorch (adjust CUDA version as needed)
-pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-
-cd SEA
-pip install -e .
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+cd SEA && pip install -r requirements.txt
 ```
 
 ### 2. Minimal Example
-
-The following script creates an agent, runs it in a custom environment, collects trajectories, evolves its memory via ICL (Reflexion), and evaluates the improvement. **No GPU required** — it uses an OpenAI-compatible API as the LLM backend.
 
 ```python
 from sea.agent.agent import SEAAgent
@@ -111,68 +104,23 @@ def step_fn(action):
 env = FunctionEnv(name="room_escape", reset_fn=reset_fn, step_fn=step_fn,
                   task_ids=["room_escape"], max_steps_val=10)
 
-# 4. Collect trajectories
+# 4. Collect → Evolve → Evaluate
 collector = TrajectoryCollector()
 trajectories = collector.collect(agent, [env], n=10)
 
-# 5. Evolve via ICL (Reflexion — no GPU needed)
 evolver = ICLEvolver(max_reflections_per_step=3, max_exemplars=5)
 metrics = MetricsTracker()
-memory_target = agent.evolvable_components()["memory"]
-evolver.evolve(agent, memory_target, trajectories, metrics)
+evolver.evolve(agent, agent.evolvable_components()["memory"], trajectories, metrics)
 
-# 6. Evaluate improvement
-evaluator = Evaluator(num_episodes_per_env=10)
-results = evaluator.evaluate(agent, [env])
+results = Evaluator(num_episodes_per_env=10).evaluate(agent, [env])
 print(f"Success rate: {results.success_rate:.0%}")
 ```
 
 ### 3. Full evolution loop with YAML config
 
-For GPU-based experiments (SFT / RL), use the config-driven pipeline:
-
 ```bash
-# Start vLLM server on GPU 0
-python scripts/serve_model.py --model Qwen/Qwen2.5-7B-Instruct --port 8000
-
-# Run SFT evolution on TextCraft
 python scripts/run_evolution.py --config examples/lora_sft_textcraft/config.yaml
 ```
-
-The config file controls everything:
-
-```yaml
-# examples/lora_sft_textcraft/config.yaml
-agent:
-  brain:
-    backend: vllm
-    model: Qwen/Qwen2.5-1.5B-Instruct
-    enable_lora: true
-    device: "cuda:0"
-  memory: working
-  planner: react
-
-env:
-  name: textcraft
-  max_steps_val: 30
-
-evolution:
-  pipeline:
-    num_iterations: 20
-    traj_per_iter: 16
-    eval_every: 5
-  evolvers:
-    - method: sft           # SFT / rl / icl / prompt
-      target: brain         # brain / memory / skill_library
-      device: "cuda:1"
-      learning_rate: 2.0e-5
-      num_epochs: 2
-
-metrics:
-  reporters: [console, tensorboard]
-```
-
-> For a complete walkthrough with GPU-based SFT training, LoRA hot-swap, and measured improvement (67% → 100%), see the **[Tutorial](docs/TUTORIAL.md)**.
 
 ---
 
@@ -180,28 +128,17 @@ metrics:
 
 ### Core Protocols
 
-Everything in SEA is built on two protocols:
-
 ```python
-class Checkpointable(ABC):
-    """Save / load state."""
-    def save_checkpoint(self, path: Path) -> None: ...
-    def load_checkpoint(self, path: Path) -> None: ...
-
 class Evolvable(Checkpointable, Generic[T]):
     """A component that can be evolved. T = state type."""
     def get_evolvable_state(self) -> T: ...
     def set_evolvable_state(self, state: T) -> None: ...
-```
 
-The `Evolver` ABC operates on any `Evolvable`:
-
-```python
 class Evolver(Checkpointable):
-    def evolve(self, agent, target: Evolvable, trajectories, metrics) -> None: ...
+    def evolve(self, agent, target: Evolvable, trajectories, metrics, **kwargs) -> None: ...
 ```
 
-This separation means **any evolver can work with any target**:
+**Any evolver can work with any compatible target:**
 
 | | LoRA (`Path`) | Prompt (`str`) | Memory (`list[dict]`) | Skills (`list[dict]`) |
 |---|:---:|:---:|:---:|:---:|
@@ -217,8 +154,8 @@ SEAAgent
 ├── LLMBrain        — wraps LLMBackend, manages LoRA + system prompt (Evolvable)
 ├── Memory           — episodic / semantic (FAISS) / working (Evolvable)
 ├── Planner          — ReAct (default), extensible to LATS / ToT
-├── SkillLibrary     — FAISS-indexed, code or text skills (Evolvable)
-└── ToolRegistry     — calculator, finish, json_parser, custom tools
+├── SkillLibrary     — FAISS-indexed, text / code / composed skills (Evolvable)
+└── ToolRegistry     — calculator, json_parser, custom tools
 ```
 
 ### LLM Backend — Inference/Training Split
@@ -226,22 +163,17 @@ SEAAgent
 | Component | GPU | Role |
 |---|---|---|
 | `VLLMBackend` | GPU 0 | Fast inference, LoRA hot-swap via `LoRARequest` |
-| `HFTrainingBackend` | GPU 1 | PEFT + TRL for SFT / RL training |
+| `HFTrainingBackend` | GPU 1 | PEFT + TRL for SFT / RL training (callbacks supported) |
 
-After training produces a new LoRA checkpoint on disk, the vLLM backend hot-swaps to it without restart.
+### Benchmarks
 
-### Environments
+| Benchmark | Install | Task Type | Status |
+|---|---|---|---|
+| **TextCraft** | `pip install textcraft` | Minecraft crafting | ✅ Verified |
+| **ALFWorld** | `pip install alfworld` + `alfworld-download` | Household robot (6 types) | ✅ Verified |
+| **WebShop** | `git clone` + `setup.sh` | E-commerce navigation | Adapter ready |
 
-`SEAEnv` mirrors Gymnasium but uses text-centric types:
-
-```python
-class SEAEnv(ABC):
-    def reset(self, *, seed=None, task_id=None) -> tuple[Observation, dict]: ...
-    def step(self, action: Action) -> tuple[Observation, float, bool, bool, dict]: ...
-    def get_task_ids(self) -> list[str]: ...
-```
-
-Built-in benchmarks: **TextCraft** (crafting), **ALFWorld** (household), **WebShop** (e-commerce).
+ALFWorld supports **task-type filtering** (pick, clean, heat, cool, examine, pick_two) for multi-task and continual learning experiments.
 
 ---
 
@@ -250,94 +182,40 @@ Built-in benchmarks: **TextCraft** (crafting), **ALFWorld** (household), **WebSh
 ### Add a new Evolution Method
 
 ```python
-from sea.core.registry import EVOLVER_REGISTRY
-from sea.evolution.base import Evolver
-
 @EVOLVER_REGISTRY.register("my_method")
 class MyEvolver(Evolver):
-    def __init__(self, temperature: float = 1.0):
-        self.temperature = temperature
-
-    def requires_trajectories(self) -> bool:
-        return True
-
-    def evolve(self, agent, target, trajectories, metrics):
-        # Your evolution logic here
-        # Read:  state = target.get_evolvable_state()
-        # Write: target.set_evolvable_state(new_state)
-        successful = [t for t in trajectories if t.success]
-        metrics.log({"my_method/num_successful": len(successful)})
-```
-
-Use it in config:
-
-```yaml
-evolution:
-  evolvers:
-    - method: my_method
-      target: memory
-      temperature: 0.8
+    def evolve(self, agent, target, trajectories, metrics, **kwargs):
+        state = target.get_evolvable_state()
+        # ... your evolution logic ...
+        target.set_evolvable_state(new_state)
 ```
 
 ### Add a new Environment
 
 ```python
-from sea.env.base import SEAEnv
-from sea.core.types import Action, Observation
-from sea.core.registry import ENV_REGISTRY
-
 @ENV_REGISTRY.register("my_env")
 class MyEnv(SEAEnv):
-    @property
-    def name(self) -> str:
-        return "my_env"
-
     def reset(self, *, seed=None, task_id=None):
-        return Observation(text="Start"), {"task_id": task_id}
-
+        return Observation(text="Start"), {"task_id": task_id, "task_type": "my_type"}
     def step(self, action):
-        reward = 1.0 if "correct" in action.text else 0.0
-        done = reward > 0
-        return Observation(text="Result"), reward, done, False, {}
-
-    def get_task_ids(self):
-        return ["task_0", "task_1"]
+        return Observation(text="Result"), reward, done, False, {"success": done}
 ```
 
-Then reference it in your config: `env: { name: my_env }`.
-
-### Add a new Evolution Target
+### Add Composed Skills
 
 ```python
-from sea.core.base import Evolvable
+from sea.agent.skills.code_skill import ComposedSkill
 
-class MyTarget(Evolvable[dict]):
-    def get_evolvable_state(self) -> dict:
-        return {"key": "value"}
-
-    def set_evolvable_state(self, state: dict) -> None:
-        ...  # Apply new state
-
-    # Also implement: evolution_metadata, save_checkpoint, load_checkpoint, state_dict
+skill = ComposedSkill(
+    name="clean_and_place",
+    description="Clean an object and place it somewhere",
+    composition_plan="navigate(obj) → pick(obj) → clean(obj) → navigate(dest) → put(obj, dest)",
+    sub_skills=["navigate", "pick_up", "clean", "put_on"],
+)
+agent.skill_library.add_skill(skill)
 ```
 
-### Add a new Tool
-
-```python
-from sea.agent.tools.base import Tool, ToolResult
-from sea.core.registry import TOOL_REGISTRY
-
-@TOOL_REGISTRY.register("web_search")
-class WebSearchTool(Tool):
-    @property
-    def name(self) -> str: return "web_search"
-
-    @property
-    def description(self) -> str: return "Search the web for information."
-
-    def execute(self, query: str = "", **kw) -> ToolResult:
-        return ToolResult(output=f"Results for: {query}")
-```
+> See [Extending SEA in detail](docs/PROMPTS.md) for full prompt templates for Claude Code.
 
 ---
 
@@ -349,24 +227,32 @@ sea/
 ├── agent/            # SEAAgent, Brain, Planner, Memory, Skills, Tools
 ├── llm/              # vLLM (LoRA hot-swap), API backend, HF training backend
 ├── evolution/
-│   ├── targets/      # LoRA, Prompt, Memory, Skill targets
-│   ├── methods/      # SFT, RL (GRPO/DPO), ICL (Reflexion), Prompt optimizer
-│   ├── data/         # Trajectory collection, reward functions, dataset conversion
+│   ├── targets/      # LoRA (multi-adapter), Prompt, Memory, Skill targets
+│   ├── methods/      # SFT, RL (GRPO/DPO), ICL (Reflexion), Prompt, ExpeL
+│   ├── data/         # Trajectory collection (task-type filter), reward, dataset
 │   └── pipeline.py   # EvolutionPipeline: collect → evolve → evaluate → repeat
 ├── env/              # SEAEnv ABC + TextCraft, ALFWorld, WebShop adapters
-├── metrics/          # MetricsTracker, Evaluator, Console/TensorBoard/W&B reporters
+├── metrics/          # MetricsTracker, Evaluator (fixed seed), reporters
 └── utils/            # Config (OmegaConf), logging, serialization
 ```
 
 ---
 
-## Vibe Coding with Claude Code
+## Documentation
 
-Use our [prompt templates](docs/PROMPTS.md) to quickly implement your ideas via AI coding assistants (Claude Code, Cursor, etc.). Each template covers a common research task: new evolvers, environments, skill types, experiments, and continual learning setups.
+| Document | Description |
+|---|---|
+| **[Prompt Templates](docs/PROMPTS.md)** | Vibe coding templates for Claude Code — implement ideas in minutes |
+| **[SFT Tutorial](docs/TUTORIAL_SFT.md)** | LoRA SFT on TextCraft with local GPU |
+| **[RL Tutorial](docs/TUTORIAL_RL.md)** | GRPO with environment-backed reward on TextCraft |
+| **[Memory Tutorial](docs/TUTORIAL_MEMORY.md)** | ICL/Reflexion memory evolution on TextCraft |
+| **[Skill Tutorial](docs/TUTORIAL_SKILLS.md)** | Custom skill evolver on TextCraft |
+| **[E2E Demo Tutorial](docs/TUTORIAL.md)** | First evolution experiment walkthrough |
+| **[中文文档](docs/README_zh.md)** | Full Chinese documentation |
 
 ---
 
-## Scripts with Examples
+## Scripts
 
 | Script | Description |
 |---|---|
@@ -377,9 +263,29 @@ Use our [prompt templates](docs/PROMPTS.md) to quickly implement your ideas via 
 
 ---
 
-| Example | Method | Target | Environment | Tutorial |
-|---|---|---|---|---|
-| **SFT on TextCraft** | SFT (LoRA) | LM weights | TextCraft | [Tutorial](docs/TUTORIAL_SFT.md) |
-| **RL on TextCraft** | GRPO (LoRA) | LM weights | TextCraft | [Tutorial](docs/TUTORIAL_RL.md) |
-| **Memory Evolution** | ICL (Reflexion) | Episodic Memory | TextCraft | [Tutorial](docs/TUTORIAL_MEMORY.md) |
-| **Skill Evolution** | Custom Evolver | Skill Library | TextCraft | [Tutorial](docs/TUTORIAL_SKILLS.md) |
+## Examples
+
+| Example | Method | Target | Environment |
+|---|---|---|---|
+| `examples/sft_textcraft/` | SFT (LoRA) | LM weights | TextCraft |
+| `examples/rl_textcraft/` | GRPO (LoRA) | LM weights | TextCraft |
+| `examples/memory_textcraft/` | ICL (Reflexion) | Episodic Memory | TextCraft |
+| `examples/skill_textcraft/` | Custom Evolver | Skill Library | TextCraft |
+| `examples/expel_textcraft/` | ExpeL | Memory (rules) | TextCraft |
+
+---
+
+## Citation
+
+```bibtex
+@software{sea2025,
+  title  = {SEA: Self-Evolving Agent Platform},
+  author = {Ivo Wang},
+  year   = {2025},
+  url    = {https://github.com/ivowang/SEA},
+}
+```
+
+## License
+
+MIT
