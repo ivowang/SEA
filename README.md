@@ -360,6 +360,12 @@ sea/
 
 ---
 
+## Vibe Coding with Claude Code
+
+Use our [prompt templates](docs/PROMPTS.md) to quickly implement your ideas via AI coding assistants (Claude Code, Cursor, etc.). Each template covers a common research task: new evolvers, environments, skill types, experiments, and continual learning setups.
+
+---
+
 ## Scripts with Examples
 
 | Script | Description |
