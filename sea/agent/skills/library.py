@@ -84,17 +84,23 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
     def get_skill(self, name: str) -> Skill | None:
         return self._skills.get(name)
 
-    def retrieve(self, query: str, k: int = 5) -> list[Skill]:
-        """Retrieve the top-k most relevant skills for *query*."""
+    def retrieve(self, query: str, k: int = 5, threshold: float = 0.3) -> list[Skill]:
+        """Retrieve the most relevant skills for *query*.
+
+        Only returns skills with cosine similarity >= threshold.
+        Returns empty list if no skill is relevant enough.
+        """
         self._ensure_loaded()
         if not self._skills:
             return []
         k = min(k, len(self._skills))
         query_emb = np.array([self._embed(query)], dtype=np.float32)
-        _, indices = self._index.search(query_emb, k)
+        scores, indices = self._index.search(query_emb, k)
         names = list(self._skills.keys())
         results = []
-        for idx in indices[0]:
+        for score, idx in zip(scores[0], indices[0]):
+            if score < threshold:
+                continue  # skip irrelevant skills
             if 0 <= idx < len(names):
                 results.append(self._skills[names[idx]])
         return results

@@ -42,7 +42,7 @@ class SEAAgent(Checkpointable):
         skill_library: SkillLibrary | None = None,
         tool_registry: ToolRegistry | None = None,
         memory_retrieval_k: int = 5,
-        skill_retrieval_k: int = 3,
+        skill_retrieval_k: int = 1,
     ) -> None:
         self.brain = brain
         self.memory = memory
@@ -61,11 +61,13 @@ class SEAAgent(Checkpointable):
         4. Ask planner for next action
         5. Execute tool call if needed
         """
-        # Retrieve from memory and skills
-        query = observation.text[:500]
-        retrieved_memories = self.memory.retrieve(query, k=self._memory_k)
+        # Use goal/task description for skill retrieval (more targeted),
+        # full observation for memory retrieval
+        skill_query = task_description if task_description else observation.text[:200]
+        mem_query = observation.text[:300]
+        retrieved_memories = self.memory.retrieve(mem_query, k=self._memory_k)
         retrieved_skills = (
-            self.skill_library.retrieve(query, k=self._skill_k)
+            self.skill_library.retrieve(skill_query, k=self._skill_k)
             if len(self.skill_library) > 0
             else []
         )

@@ -33,7 +33,7 @@ MODEL = os.environ.get("SEA_MODEL", "openai/gpt-5.4-nano")
 
 NUM_ITERATIONS = 4
 NUM_COLLECT = 12
-NUM_EVAL = 20
+NUM_EVAL = 30
 
 # ── Custom SkillExtractEvolver ────────────────────────────────────────
 from sea.core.registry import EVOLVER_REGISTRY
@@ -98,6 +98,19 @@ if "skill_extract_tc" not in EVOLVER_REGISTRY:
                         steps = line.split(":", 1)[1].strip()
 
                 if not name or name in existing:
+                    continue
+
+                # Deduplicate: skip if description is too similar to existing skill
+                is_dup = False
+                for s in agent.skill_library.list_skills():
+                    if desc and s.description and (
+                        desc.lower() in s.description.lower()
+                        or s.description.lower() in desc.lower()
+                    ):
+                        is_dup = True
+                        break
+                if is_dup:
+                    logger.info("  Skipped duplicate skill: '%s'", name)
                     continue
 
                 try:

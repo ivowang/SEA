@@ -48,10 +48,12 @@ class Evaluator:
         num_episodes_per_env: int = 20,
         eval_temperature: float = 0.0,  # Greedy for eval
         max_steps: int | None = None,
+        eval_seed: int = 42,  # Fixed seed for reproducible task selection
     ) -> None:
         self._num_episodes = num_episodes_per_env
         self._eval_temp = eval_temperature
         self._max_steps = max_steps
+        self._eval_seed = eval_seed
 
     def evaluate(
         self,
@@ -72,7 +74,9 @@ class Evaluator:
                 env_trajs: list[Trajectory] = []
                 available_tasks = task_ids or env.get_task_ids()
 
-                selected = random.sample(
+                # Fixed seed ensures same tasks are evaluated every iteration
+                rng = random.Random(self._eval_seed)
+                selected = rng.sample(
                     available_tasks,
                     min(self._num_episodes, len(available_tasks)),
                 )
