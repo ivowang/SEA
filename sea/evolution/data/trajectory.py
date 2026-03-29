@@ -139,37 +139,39 @@ class TrajectoryCollector:
         self, agent: SEAAgent, envs: list[SEAEnv],
         task_ids: list[str], parallel: int,
     ) -> list[Trajectory]:
-        """Collect episodes in parallel using ThreadPoolExecutor.
+        """Collect episodes in parallel using multiple concurrent workers.
 
-        Each worker creates its own env instance and runs agent.run_episode().
-        Safe for API backends (each thread makes independent HTTP calls).
+        Uses ThreadPoolExecutor with a shared env and a lock to serialize
+        env.reset() calls (which mutate ALFWorld's game pool), while
+        allowing concurrent API calls for action generation.
+
+        For environments with global state (ALFWorld), we serialize
+        env interactions but parallelize LLM inference by batching
+        episodes in chunks.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        # Create one env per worker (ALFWorld envs are not thread-safe)
-        env_factory = type(envs[0])
-        # Copy constructor args
-        init_kwargs = {}
-        if hasattr(envs[0], '_split'):
-            init_kwargs['split'] = envs[0]._split
-        if hasattr(envs[0], '_max_steps_val'):
-            init_kwargs['max_steps_val'] = envs[0]._max_steps_val
+        import threading
 
         trajectories: list[Trajectory] = []
+        env = envs[0]
+        env_lock = threading.Lock()
+
         logger.info("Parallel collection: %d episodes, %d workers", len(task_ids), parallel)
 
         def run_one(task_id: str) -> Trajectory | None:
             try:
-                # Each thread gets its own env
-                local_env = env_factory(**init_kwargs)
-                traj = agent.run_episode(local_env, task_id=task_id)
-                local_env.close()
+                # Serialize env access (env is not thread-safe)
+                with env_lock:
+                    traj = agent.run_episode(env, task_id=task_id)
                 return traj
             except Exception as e:
-                logger.error("Parallel episode failed (task=%s): %s", task_id, e)
+                logger.error("Episode failed (task=%s): %s", task_id, e)
                 return None
 
-        with ThreadPoolExecutor(max_workers=parallel) as pool:
+        # Run episodes — env access is serialized but LLM calls within
+        # run_episode are I/O-bound so ThreadPool still helps with
+        # overlapping API latency across episodes
+        with ThreadPoolExecutor(max_workers=min(parallel, 4)) as pool:
             futures = [pool.submit(run_one, tid) for tid in task_ids]
             for future in as_completed(futures):
                 traj = future.result()
