@@ -10,49 +10,28 @@
 
 <p align="center">
   <a href="#快速开始">快速开始</a> &bull;
-  <a href="#平台架构">平台架构</a> &bull;
-  <a href="#扩展指南">扩展指南</a> &bull;
+  <a href="#文档">教程</a> &bull;
   <a href="../README.md">English</a>
 </p>
 
 ---
 
-## 为什么选择 SEA？
-
-现有的 Agent 框架专注于**使用** Agent。SEA 专注于**进化**它们。
-
-SEA 将 **"进化什么"**（LoRA 权重、Prompt、记忆、技能）和 **"怎么进化"**（SFT、RL、上下文学习、Prompt优化）彻底解耦，研究者可以在一个配置文件中自由组合进化方法和进化对象。
-
-```
-┌─────────────────────────────────────────────────────┐
-│              EvolutionPipeline                      │
-│        收集轨迹 → 进化对象 → 评测表现 → 重复         │
-├──────────┬──────────┬──────────┬────────────────────┤
-│ 进化方法  │ 进化对象  │  评测    │  轨迹缓冲          │
-│ SFT / RL │ LoRA /   │ Tracker +│ 收集 / 过滤 /      │
-│ ICL /... │ Prompt / │ Evaluator│ 采样               │
-│          │ Memory / │          │                    │
-│          │ Skill    │          │                    │
-├──────────┴──────────┴──────────┴────────────────────┤
-│                    SEAAgent                         │
-│  ┌──────┐ ┌───────┐ ┌───────┐ ┌──────┐ ┌────────┐   │
-│  │LLM作 │ │记忆   │ │规划器 │ │技能  │ │工具    │   │
-│  │为大脑│ │Epi/Sem│ │ReAct/ │ │技能库│ │注册表  │   │
-│  │      │ │/Work  │ │LATS   │ │      │ │        │   │
-│  └──┬───┘ └───────┘ └───────┘ └──────┘ └────────┘   │
-├─────┴───────────────────────────────────────────────┤
-│  LLM 后端                                           │
-│  GPU 0: vLLM 推理 + LoRA 热切换                      │
-│  GPU 1: HF Trainer (PEFT + TRL) SFT/RL 训练          │
-├─────────────────────────────────────────────────────┤
-│  环境层: SEAEnv (Gymnasium 风格)                      │
-│  TextCraft │ ALFWorld │ WebShop │ 自定义 …            │
-└─────────────────────────────────────────────────────┘
-```
-
----
-
 ## 快速开始
+
+### 0. 通过 Vibe Coding 使用 SEA
+
+SEA 专为 **vibe coding** 设计——用自然语言描述你的研究想法，让 AI 编程助手（Claude Code、Cursor 等）在平台上实现它。我们提供了 [prompt 模板](PROMPTS.md) 覆盖常见任务：
+
+- 实现新的进化方法（如 ExpeL、LATS、持续学习）
+- 接入新的基准环境
+- 创建组合/层次化技能
+- 端到端运行实验
+
+示例——粘贴到 Claude Code 中：
+
+> *"我想在 SEA 平台上实现 ExpeL。它从成功和失败的轨迹中提取 IF/THEN/BECAUSE 规则并存入记忆。参考 sea/evolution/methods/icl.py。创建 evolver 在 sea/evolution/methods/expel.py，demo 在 examples/expel_textcraft/run.py。"*
+
+完整模板见 [docs/PROMPTS.md](PROMPTS.md)。
 
 ### 1. 安装
 
@@ -219,25 +198,6 @@ agent.skill_library.add_skill(skill)
 
 ---
 
-## 项目结构
-
-```
-sea/
-├── core/             # Evolvable[T]、Checkpointable、类型定义、组件注册
-├── agent/            # SEAAgent、Brain、Planner、Memory、Skills、Tools
-├── llm/              # vLLM（LoRA 热切换）、API 后端、HF 训练后端
-├── evolution/
-│   ├── targets/      # LoRA（多适配器）、Prompt、Memory、Skill 进化对象
-│   ├── methods/      # SFT、RL (GRPO/DPO)、ICL (Reflexion)、Prompt、ExpeL
-│   ├── data/         # 轨迹收集（任务类型过滤）、奖励函数、数据集转换
-│   └── pipeline.py   # EvolutionPipeline: 收集 → 进化 → 评测 → 重复
-├── env/              # SEAEnv 接口 + TextCraft、ALFWorld、WebShop 适配器
-├── metrics/          # MetricsTracker、Evaluator（固定种子）、reporters
-└── utils/            # 配置（OmegaConf）、日志、序列化
-```
-
----
-
 ## 文档
 
 | 文档 | 说明 |
@@ -279,7 +239,7 @@ sea/
 ```bibtex
 @software{sea2025,
   title  = {SEA: Self-Evolving Agent Platform},
-  author = {Ivo Wang},
+  author = {Ziyi Wang},
   year   = {2025},
   url    = {https://github.com/ivowang/SEA},
 }

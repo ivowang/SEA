@@ -10,49 +10,28 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
-  <a href="#architecture">Architecture</a> &bull;
-  <a href="#extending-sea">Extending SEA</a> &bull;
+  <a href="#documentation">Tutorials</a> &bull;
   <a href="docs/README_zh.md">中文文档</a>
 </p>
 
 ---
 
-## Why SEA?
-
-Existing agent frameworks focus on *using* agents. SEA **evolves** them.
-
-SEA decouples **what evolves** (LoRA weights, prompts, memory, skills) from **how it evolves** (SFT, RL, in-context learning, prompt optimization), letting researchers freely combine evolution methods and targets in a single config file.
-
-```
-┌─────────────────────────────────────────────────────┐
-│              EvolutionPipeline                      │
-│        collect → evolve → evaluate → repeat         │
-├──────────┬──────────┬──────────┬────────────────────┤
-│ Evolvers │ Targets  │ Metrics  │ TrajectoryBuffer   │
-│ SFT / RL │ LoRA /   │ Tracker +│ Collect / Filter / │
-│ ICL /... │ Prompt / │ Evaluator│ Sample             │
-│          │ Memory / │          │                    │
-│          │ Skill    │          │                    │
-├──────────┴──────────┴──────────┴────────────────────┤
-│                    SEAAgent                         │
-│  ┌──────┐ ┌───────┐ ┌───────┐ ┌──────┐ ┌────────┐   │
-│  │LLM as│ │Memory │ │Planner│ │Skills│ │Tools   │   │
-│  │Brain │ │Epi/Sem│ │ReAct/ │ │Lib   │ │Registry│   │
-│  │      │ │/Work  │ │LATS   │ │      │ │        │   │
-│  └──┬───┘ └───────┘ └───────┘ └──────┘ └────────┘   │
-├─────┴───────────────────────────────────────────────┤
-│  LLM Backend                                        │
-│  GPU 0: vLLM inference + LoRA hot-swap              │
-│  GPU 1: HF Trainer (PEFT + TRL) for SFT/RL          │
-├─────────────────────────────────────────────────────┤
-│  Environment Layer: SEAEnv (Gymnasium-style)        │
-│  TextCraft │ ALFWorld │ WebShop │ Custom …          │
-└─────────────────────────────────────────────────────┘
-```
-
----
-
 ## Quick Start
+
+### 0. Use SEA with Vibe Coding
+
+SEA is designed for **vibe coding** — describe your research idea in natural language and let an AI coding assistant (Claude Code, Cursor, etc.) implement it on the platform. We provide [prompt templates](docs/PROMPTS.md) covering common tasks:
+
+- Implement a new evolution method (e.g., ExpeL, LATS, continual learning)
+- Add a new benchmark environment
+- Create composed/hierarchical skills
+- Run an experiment end-to-end
+
+Example — paste this into Claude Code:
+
+> *"I want to implement ExpeL on the SEA platform. It extracts IF/THEN/BECAUSE rules from successful and failed trajectories and stores them in memory. See sea/evolution/methods/icl.py for reference. Create the evolver in sea/evolution/methods/expel.py and a demo in examples/expel_textcraft/run.py."*
+
+See [docs/PROMPTS.md](docs/PROMPTS.md) for full templates.
 
 ### 1. Install
 
@@ -219,25 +198,6 @@ agent.skill_library.add_skill(skill)
 
 ---
 
-## Project Structure
-
-```
-sea/
-├── core/             # Evolvable[T], Checkpointable, types, registry
-├── agent/            # SEAAgent, Brain, Planner, Memory, Skills, Tools
-├── llm/              # vLLM (LoRA hot-swap), API backend, HF training backend
-├── evolution/
-│   ├── targets/      # LoRA (multi-adapter), Prompt, Memory, Skill targets
-│   ├── methods/      # SFT, RL (GRPO/DPO), ICL (Reflexion), Prompt, ExpeL
-│   ├── data/         # Trajectory collection (task-type filter), reward, dataset
-│   └── pipeline.py   # EvolutionPipeline: collect → evolve → evaluate → repeat
-├── env/              # SEAEnv ABC + TextCraft, ALFWorld, WebShop adapters
-├── metrics/          # MetricsTracker, Evaluator (fixed seed), reporters
-└── utils/            # Config (OmegaConf), logging, serialization
-```
-
----
-
 ## Documentation
 
 | Document | Description |
@@ -280,7 +240,7 @@ sea/
 ```bibtex
 @software{sea2025,
   title  = {SEA: Self-Evolving Agent Platform},
-  author = {Ivo Wang},
+  author = {Ziyi Wang},
   year   = {2025},
   url    = {https://github.com/ivowang/SEA},
 }
