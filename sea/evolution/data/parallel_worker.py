@@ -26,6 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 
 def main():
+    # Prevent CUDA init in API-only workers (saves GPU memory)
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--n", type=int, default=5)
