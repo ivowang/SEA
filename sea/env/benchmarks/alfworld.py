@@ -54,24 +54,42 @@ class ALFWorldEnv(SEAEnv):
         try:
             import yaml
             import alfworld.agents.environment as environment
-            import alfworld.agents.modules.generic as generic
         except ImportError as e:
             raise ImportError(
                 "ALFWorld is required. Install with:\n"
-                "  pip install alfworld[full]\n"
+                "  pip install alfworld\n"
                 "  alfworld-download"
             ) from e
 
-        # Load config
-        if self._config_path:
-            with open(self._config_path) as f:
-                config = yaml.safe_load(f)
-        else:
-            config = generic.load_config()
+        # Load config from provided path or default SEA config
+        config_path = self._config_path
+        if not config_path:
+            import os
+            config_path = os.path.join(
+                os.path.dirname(__file__), "..", "..", "..", "configs", "envs", "alfworld_base.yaml"
+            )
+
+        # Set ALFWORLD_DATA if not set
+        import os
+        if "ALFWORLD_DATA" not in os.environ:
+            alfworld_cache = os.path.expanduser("~/.cache/alfworld")
+            if os.path.exists(alfworld_cache):
+                os.environ["ALFWORLD_DATA"] = alfworld_cache
+
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        # Resolve env vars in config paths
+        for section in config.values():
+            if isinstance(section, dict):
+                for key, val in section.items():
+                    if isinstance(val, str) and "$" in val:
+                        section[key] = os.path.expandvars(val)
 
         # Create environment
-        env_type = config["env"]["type"]  # typically 'AlfredTWEnv'
-        self._env = getattr(environment, env_type)(config, train_eval=self._split)
+        env_type = config["env"]["type"]  # 'AlfredTWEnv'
+        env_cls = environment.get_environment(env_type)
+        self._env = env_cls(config, train_eval=self._split)
         self._env = self._env.init_env(batch_size=1)
         logger.info("ALFWorld loaded (split=%s, type=%s)", self._split, env_type)
 
@@ -84,9 +102,30 @@ class ALFWorldEnv(SEAEnv):
         return self._max_steps_val
 
     def get_task_ids(self) -> list[str]:
-        # ALFWorld uses a sequential game pool — task_id is an index hint
-        # but the underlying TextWorld env cycles through games on reset()
+        # ALFWorld cycles through games sequentially on reset()
         return [f"game_{i}" for i in range(134)]
+
+    def get_task_types(self) -> list[str]:
+        """ALFWorld has 6 task types."""
+        return ["pick", "clean", "heat", "cool", "examine", "pick_two"]
+
+    @staticmethod
+    def _extract_task_type(obs_text: str) -> str:
+        """Extract task type from ALFWorld observation text."""
+        obs_lower = obs_text.lower()
+        if "put a clean" in obs_lower:
+            return "clean"
+        elif "put a hot" in obs_lower:
+            return "heat"
+        elif "put a cool" in obs_lower:
+            return "cool"
+        elif "look at" in obs_lower and "under" in obs_lower:
+            return "examine"
+        elif "find two" in obs_lower or "put them" in obs_lower:
+            return "pick_two"
+        elif "put" in obs_lower:
+            return "pick"
+        return "unknown"
 
     def reset(
         self, *, seed: int | None = None, task_id: str | None = None,
@@ -95,13 +134,13 @@ class ALFWorldEnv(SEAEnv):
         self._step_count = 0
         self._game_count += 1
 
-        # ALFWorld cycles through its game pool sequentially on each reset.
-        # task_id/seed cannot select a specific game — this is a limitation
-        # of the TextWorld-based ALFWorld environment.
         obs, infos = self._env.reset()
 
         # Unwrap batch dimension (batch_size=1)
         obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
+
+        # Extract task type from observation
+        task_type = self._extract_task_type(obs_text)
 
         # Extract admissible commands
         admissible = None
@@ -113,6 +152,7 @@ class ALFWorldEnv(SEAEnv):
         info: dict[str, Any] = {
             "task_id": task_id or f"game_{self._game_count}",
             "task_description": obs_text,
+            "task_type": task_type,
         }
 
         return (

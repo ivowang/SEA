@@ -1,0 +1,40 @@
+# ALFWorld base configuration for SEA platform
+# Data paths point to alfworld-download cache location
+
+dataset:
+  data_path: "$ALFWORLD_DATA/json_2.1.1/train"
+  eval_id_data_path: "$ALFWORLD_DATA/json_2.1.1/valid_seen"
+  eval_ood_data_path: "$ALFWORLD_DATA/json_2.1.1/valid_unseen"
+  num_train_games: -1
+  num_eval_games: -1
+
+logic:
+  domain: "$ALFWORLD_DATA/logic/alfred.pddl"
+  grammar: "$ALFWORLD_DATA/logic/alfred.twl2"
+
+env:
+  type: AlfredTWEnv
+  regen_game_files: false
+  domain_randomization: false
+  task_types: [1, 2, 3, 4, 5, 6]  # all 6 task types
+  goal_desc_human_anns_prob: 0
+  expert_timeout_steps: 150
+  expert_type: "handcoded"
+
+dagger:
+  training:
+    max_nb_steps_per_episode: 50
+    batch_size: 1
+
+rl:
+  training:
+    max_nb_steps_per_episode: 50
+    batch_size: 1
+
+general:
+  random_seed: 42
+  use_cuda: false
+  visdom: false
+  task_num: 0
+  training_method: "dagger"
+  note: ""
