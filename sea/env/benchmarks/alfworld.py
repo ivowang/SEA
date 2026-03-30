@@ -40,8 +40,10 @@ class ALFWorldEnv(SEAEnv):
         split: str = "eval_out_of_distribution",
         max_steps_val: int = 50,
         config_path: str | None = None,
+        task_type_filter: str | None = None,
     ) -> None:
         self._split = split
+        self._task_type_filter = task_type_filter
         self._max_steps_val = max_steps_val
         self._config_path = config_path
         self._env = None
@@ -134,13 +136,20 @@ class ALFWorldEnv(SEAEnv):
         self._step_count = 0
         self._game_count += 1
 
-        obs, infos = self._env.reset()
-
-        # Unwrap batch dimension (batch_size=1)
-        obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
-
-        # Extract task type from observation
-        task_type = self._extract_task_type(obs_text)
+        # If task_type_filter is set, keep resetting until we get the target type.
+        # ALFWorld cycles through its game pool, so we skip non-matching games.
+        max_skips = 500  # safety limit
+        for _ in range(max_skips):
+            obs, infos = self._env.reset()
+            obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
+            task_type = self._extract_task_type(obs_text)
+            if self._task_type_filter is None or task_type == self._task_type_filter:
+                break
+        else:
+            raise RuntimeError(
+                f"Could not find task type '{self._task_type_filter}' after {max_skips} resets. "
+                f"This task type may not exist in the '{self._split}' split."
+            )
 
         # Extract admissible commands
         admissible = None

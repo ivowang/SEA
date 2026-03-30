@@ -1,38 +1,39 @@
 #!/usr/bin/env python3
-"""Standalone worker script for parallel trajectory collection.
+"""Standalone worker for parallel trajectory collection.
+
+Each worker runs episodes in a loop, appending results to a shared
+JSONL file (one JSON object per line). The main process monitors
+the file and kills workers when enough data is collected.
 
 Usage:
     python -m sea.evolution.data.parallel_worker \
-        --output /tmp/traj_worker_0.json \
-        --n 5 \
+        --output /path/to/shared_output.jsonl \
         --env alfworld \
-        --env-kwargs '{"split": "eval_out_of_distribution", "max_steps_val": 30}' \
-        --backend-type api \
-        --backend-kwargs '{"model": "openai/gpt-5.4-nano", "base_url": "...", "api_key": "..."}' \
-        --system-prompt "You are a household robot."
-
-Each invocation creates its own env + agent, runs n episodes,
-and writes results to --output as JSON.
+        --env-kwargs '{"split": "eval_out_of_distribution"}' \
+        --backend-kwargs '{"model": "...", "base_url": "...", "api_key": "..."}' \
+        --system-prompt "..." \
+        --max-episodes 100
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import fcntl
 from pathlib import Path
+
+# Prevent CUDA init in API-only workers
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 
 def main():
-    # Prevent CUDA init in API-only workers (saves GPU memory)
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--n", type=int, default=5)
+    parser.add_argument("--output", required=True, help="Shared JSONL output file")
+    parser.add_argument("--max-episodes", type=int, default=100)
     parser.add_argument("--env", default="alfworld")
     parser.add_argument("--env-kwargs", default="{}")
     parser.add_argument("--backend-type", default="api")
@@ -40,10 +41,18 @@ def main():
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--max-tokens", type=int, default=150)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--task-type-filter", default=None,
+                        help="Only collect episodes of this task type")
+    parser.add_argument("--only-successful", action="store_true",
+                        help="Only save successful trajectories")
     args = parser.parse_args()
 
     env_kwargs = json.loads(args.env_kwargs)
     backend_kwargs = json.loads(args.backend_kwargs)
+
+    # Inject task_type_filter into env_kwargs
+    if args.task_type_filter:
+        env_kwargs["task_type_filter"] = args.task_type_filter
 
     # Create env
     from sea.core.registry import ENV_REGISTRY
@@ -70,12 +79,17 @@ def main():
         planner=ReActPlanner(),
     )
 
-    # Collect
-    results = []
-    for i in range(args.n):
+    # Run episodes in a loop, append each to JSONL
+    output_path = Path(args.output)
+    for i in range(args.max_episodes):
         try:
             traj = agent.run_episode(env)
-            results.append({
+
+            # Skip unsuccessful if only_successful is set
+            if args.only_successful and not traj.success:
+                continue
+
+            record = {
                 "task_id": traj.task_id,
                 "task_type": traj.task_type,
                 "total_reward": traj.total_reward,
@@ -87,7 +101,6 @@ def main():
                         "observation": s.observation.text[:500],
                         "action": s.action.text,
                         "action_type": s.action.action_type,
-                        "action_metadata": {k: str(v)[:200] for k, v in s.action.metadata.items()},
                         "next_observation": s.next_observation.text[:500] if s.next_observation else "",
                         "reward": s.reward,
                         "done": s.done,
@@ -95,13 +108,19 @@ def main():
                     }
                     for s in traj.steps
                 ],
-            })
+            }
+            line = json.dumps(record, ensure_ascii=False) + "\n"
+
+            # Atomic append with file lock — flush before unlock
+            with open(output_path, "a") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+                fcntl.flock(f, fcntl.LOCK_UN)
+
         except Exception as e:
             print(f"Episode {i} failed: {e}", file=sys.stderr)
-
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text(json.dumps(results, ensure_ascii=False))
-    print(f"Worker done: {len(results)} trajectories saved to {args.output}")
 
     env.close()
 

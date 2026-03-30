@@ -38,10 +38,10 @@ BASE_URL = os.environ.get("SEA_BASE_URL", "https://api.aigocode.com/v1")
 API_MODEL = "openai/gpt-5.4-nano"
 MODEL_PATH = os.environ.get("SEA_MODEL_PATH", "/root/models/Qwen2.5-7B-Instruct")
 
-TASK_SEQUENCE = ["pick", "clean", "heat", "cool", "examine", "pick_two"]
-NUM_COLLECT_PER_TASK = 300  # training trajectories per task type
+TASK_SEQUENCE = ["pick", "clean", "heat", "cool", "examine", "pick_two"]  # all 6 ALFWorld types
+NUM_COLLECT_PER_TASK = 100  # successful training trajectories per task type
 NUM_EVAL_PER_TYPE = 50     # eval episodes per task type
-NUM_WORKERS = 30            # parallel collection workers
+NUM_WORKERS = 20            # parallel collection workers (more causes IO contention)
 LORA_RANK = 8
 
 OUTPUT_DIR = Path("ideas/olora-continual/outputs")
@@ -136,91 +136,96 @@ if __name__ == "__main__":
 
     all_trajectories: dict[str, list[Trajectory]] = {tt: [] for tt in TASK_SEQUENCE}
 
-    # Check existing data on disk — skip collection if enough data exists
+    # Check existing data on disk — skip collection if enough SUCCESSFUL data exists
+    def load_trajs_from_file(filepath: Path, tt: str) -> list[Trajectory]:
+        """Load Trajectory objects from a JSON file."""
+        data = _json.loads(filepath.read_text())
+        trajs = []
+        for d in data:
+            steps = [
+                Step(
+                    observation=Observation(text=s.get("observation", "")),
+                    action=Action(text=s.get("action", ""), action_type=s.get("action_type", "text")),
+                    next_observation=Observation(text=s["next_observation"]) if s.get("next_observation") else None,
+                    reward=s.get("reward", 0.0),
+                    done=s.get("done", False),
+                    info=s.get("info", {}),
+                )
+                for s in d.get("steps", [])
+            ]
+            trajs.append(Trajectory(
+                steps=steps, task_id=d.get("task_id", ""),
+                task_type=d.get("task_type", tt),
+                total_reward=d.get("total_reward", 0.0),
+                success=d.get("success", False),
+                metadata=d.get("metadata", {}),
+            ))
+        return trajs
+
     need_collect = False
     for tt in TASK_SEQUENCE:
         traj_file = TRAJ_DIR / f"{tt}.json"
         if traj_file.exists():
-            data = _json.loads(traj_file.read_text())
-            logger.info("  Found %d existing trajectories for '%s'", len(data), tt)
-            if len(data) >= NUM_COLLECT_PER_TASK:
-                # Reconstruct Trajectory objects from saved JSON
-                for d in data[:NUM_COLLECT_PER_TASK]:
-                    steps = [
-                        Step(
-                            observation=Observation(text=s.get("observation", "")),
-                            action=Action(text=s.get("action", ""), action_type=s.get("action_type", "text")),
-                            next_observation=Observation(text=s["next_observation"]) if s.get("next_observation") else None,
-                            reward=s.get("reward", 0.0),
-                            done=s.get("done", False),
-                            info=s.get("info", {}),
-                        )
-                        for s in d.get("steps", [])
-                    ]
-                    traj = Trajectory(
-                        steps=steps, task_id=d.get("task_id", ""),
-                        task_type=d.get("task_type", tt),
-                        total_reward=d.get("total_reward", 0.0),
-                        success=d.get("success", False),
-                        metadata=d.get("metadata", {}),
-                    )
-                    all_trajectories[tt].append(traj)
+            trajs = load_trajs_from_file(traj_file, tt)
+            successful = [t for t in trajs if t.success]
+            logger.info("  Found %d trajectories for '%s' (%d successful)",
+                        len(trajs), tt, len(successful))
+            if len(successful) >= NUM_COLLECT_PER_TASK:
+                all_trajectories[tt] = successful[:NUM_COLLECT_PER_TASK]
                 continue
+            else:
+                # Partial data — keep what we have, collect more
+                all_trajectories[tt] = successful
         need_collect = True
 
     if need_collect:
-        # Collect everything — we need enough data per task type.
-        # Since ALFWorld cycles games sequentially, we collect a large batch
-        # and distribute by task_type. We over-collect to ensure coverage.
-        total_needed = NUM_COLLECT_PER_TASK * len(TASK_SEQUENCE)
-        # ALFWorld has ~134 games, mostly pick/clean. Over-collect 3x to cover rarer types.
-        total_to_collect = total_needed * 3
-
-        logger.info("Need to collect ~%d episodes (target %d/type × %d types, 3x oversampling)",
-                    total_to_collect, NUM_COLLECT_PER_TASK, len(TASK_SEQUENCE))
-
-        all_trajs = TrajectoryCollector.collect_subprocess(
-            n=total_to_collect,
-            num_workers=NUM_WORKERS,
-            env_name="alfworld",
-            env_kwargs={"split": "eval_out_of_distribution", "max_steps_val": 30},
-            backend_kwargs={"model": API_MODEL, "base_url": BASE_URL, "api_key": API_KEY},
-            system_prompt=SYSTEM_PROMPT,
-            max_tokens=150,
-            temperature=0.7,
-        )
-
-        # Group by task type
-        collected_by_type: dict[str, list[Trajectory]] = {tt: [] for tt in TASK_SEQUENCE}
-        for traj in all_trajs:
-            tt = traj.task_type
-            if tt in collected_by_type:
-                collected_by_type[tt].append(traj)
-
-        # Persist to disk as JSON
-        for tt, trajs in collected_by_type.items():
+        # Collect per task type sequentially. Each type uses task_type_filter
+        # so workers only get episodes of the target type. Only successful
+        # trajectories are saved (SFT only uses successes).
+        def save_trajs(tt: str, trajs: list[Trajectory]):
             traj_file = TRAJ_DIR / f"{tt}.json"
-            data = []
-            for t in trajs:
-                data.append({
-                    "task_id": t.task_id, "task_type": t.task_type,
-                    "total_reward": t.total_reward, "success": t.success,
-                    "num_steps": len(t), "metadata": t.metadata,
-                    "steps": [
-                        {
-                            "observation": s.observation.text[:500],
-                            "action": s.action.text,
-                            "action_type": s.action.action_type,
-                            "next_observation": s.next_observation.text[:500] if s.next_observation else "",
-                            "reward": s.reward, "done": s.done,
-                            "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
-                        }
-                        for s in t.steps
-                    ],
-                })
+            data = [{
+                "task_id": t.task_id, "task_type": t.task_type,
+                "total_reward": t.total_reward, "success": t.success,
+                "num_steps": len(t), "metadata": t.metadata,
+                "steps": [{
+                    "observation": s.observation.text[:500],
+                    "action": s.action.text,
+                    "action_type": s.action.action_type,
+                    "next_observation": s.next_observation.text[:500] if s.next_observation else "",
+                    "reward": s.reward, "done": s.done,
+                    "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
+                } for s in t.steps],
+            } for t in trajs]
             traj_file.write_text(_json.dumps(data, ensure_ascii=False))
-            logger.info("  Saved %d trajectories for '%s' to %s", len(data), tt, traj_file)
-            all_trajectories[tt] = trajs[:NUM_COLLECT_PER_TASK]
+
+        for tt in TASK_SEQUENCE:
+            existing = len(all_trajectories[tt])
+            needed = NUM_COLLECT_PER_TASK - existing
+            if needed <= 0:
+                continue
+
+            logger.info("Collecting %d successful '%s' trajectories (%d already have) ...",
+                        needed, tt, existing)
+
+            trajs = TrajectoryCollector.collect_subprocess(
+                target_per_type={tt: needed},
+                num_workers=NUM_WORKERS,
+                env_name="alfworld",
+                env_kwargs={"split": "train", "max_steps_val": 30},
+                backend_kwargs={"model": API_MODEL, "base_url": BASE_URL, "api_key": API_KEY},
+                system_prompt=SYSTEM_PROMPT,
+                max_tokens=150,
+                temperature=0.7,
+                task_type_filter=tt,
+                only_successful=True,
+                poll_interval=15,
+            )
+
+            all_trajectories[tt].extend(trajs)
+            all_trajectories[tt] = all_trajectories[tt][:NUM_COLLECT_PER_TASK]
+            save_trajs(tt, all_trajectories[tt])
+            logger.info("  '%s': %d successful trajectories saved", tt, len(all_trajectories[tt]))
 
     traj_summary = {tt: {"count": len(ts), "success": sum(1 for t in ts if t.success)}
                     for tt, ts in all_trajectories.items() if ts}
@@ -264,9 +269,11 @@ if __name__ == "__main__":
 
     logger.info("Evaluating baseline on each task type ...")
     for tt in TASK_SEQUENCE:
-        result = evaluator.evaluate(local_agent, [env])
+        tt_env = ALFWorldEnv(split="eval_out_of_distribution", max_steps_val=30, task_type_filter=tt)
+        result = evaluator.evaluate(local_agent, [tt_env])
         baseline_row[tt] = result.success_rate
         logger.info("  Baseline on '%s': %.0f%%", tt, result.success_rate * 100)
+        tt_env.close()
 
     eval_table["baseline"] = baseline_row
     logger.info("Baseline complete: %s",
@@ -392,10 +399,12 @@ if __name__ == "__main__":
         row: dict[str, float] = {}
         seen_tasks = TASK_SEQUENCE[:task_idx + 1]
         for tt in seen_tasks:
-            result = evaluator.evaluate(eval_agent, [env])
+            tt_env = ALFWorldEnv(split="eval_out_of_distribution", max_steps_val=30, task_type_filter=tt)
+            result = evaluator.evaluate(eval_agent, [tt_env])
             row[tt] = result.success_rate
             logger.info("  After '%s' training, eval on '%s': %.0f%%",
                         task_type, tt, result.success_rate * 100)
+            tt_env.close()
 
         eval_table[f"after_{task_type}"] = row
 

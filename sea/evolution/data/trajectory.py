@@ -119,59 +119,66 @@ class TrajectoryCollector:
 
     @staticmethod
     def collect_subprocess(
-        n: int,
-        num_workers: int = 30,
+        target_per_type: dict[str, int] | None = None,
+        n: int = 0,
+        num_workers: int = 20,
         env_name: str = "alfworld",
         env_kwargs: dict | None = None,
         backend_kwargs: dict | None = None,
         system_prompt: str = "",
         max_tokens: int = 150,
         temperature: float = 0.0,
+        task_type_filter: str | None = None,
+        only_successful: bool = False,
+        poll_interval: int = 15,
     ) -> list[Trajectory]:
-        """Collect trajectories using parallel subprocess workers.
+        """Collect trajectories using long-running parallel subprocess workers.
 
-        Each worker is a separate Python process with its own env + agent.
-        This is the only reliable way to parallelize ALFWorld (TextWorld
-        has global state that breaks threads and fork-based multiprocessing).
+        Workers run episodes in a loop, appending results to a shared JSONL
+        file. The main process polls the file and kills workers once targets
+        are met.
+
+        For targeted collection (e.g., 100 successful 'pick' trajectories),
+        set task_type_filter='pick' and only_successful=True. Each worker's
+        ALFWorld env will skip non-matching task types at reset().
 
         Args:
-            n: Total number of trajectories to collect.
+            target_per_type: Dict of {task_type: count} targets.
+            n: Flat target (used if target_per_type is None).
             num_workers: Number of parallel worker subprocesses.
             env_name: Registered environment name.
             env_kwargs: Environment constructor kwargs.
-            backend_kwargs: APIBackend kwargs (model, base_url, api_key).
+            backend_kwargs: APIBackend kwargs.
             system_prompt: Agent system prompt.
             max_tokens: Max generation tokens.
             temperature: LLM temperature.
+            task_type_filter: If set, workers only collect this task type.
+            only_successful: If True, workers only save successful episodes.
+            poll_interval: Seconds between progress checks.
 
         Returns:
             List of Trajectory objects.
         """
+        import time
+
         env_kwargs = env_kwargs or {}
         backend_kwargs = backend_kwargs or {}
 
-        # Distribute episodes evenly
-        eps_per_worker = [n // num_workers] * num_workers
-        for i in range(n % num_workers):
-            eps_per_worker[i] += 1
-        eps_per_worker = [e for e in eps_per_worker if e > 0]
-        actual_workers = len(eps_per_worker)
-
-        logger.info(
-            "Subprocess collection: %d episodes across %d workers",
-            n, actual_workers,
-        )
-
         tmpdir = tempfile.mkdtemp(prefix="sea_collect_")
-        worker_script = str(Path(__file__).parent / "parallel_worker.py")
-        procs = []
+        shared_jsonl = Path(tmpdir) / "trajectories.jsonl"
+        shared_jsonl.touch()
 
-        for i, ep_count in enumerate(eps_per_worker):
-            output_file = f"{tmpdir}/worker_{i}.json"
+        worker_script = str(Path(__file__).parent / "parallel_worker.py")
+
+        filter_desc = f" (type={task_type_filter}, success_only={only_successful})" if task_type_filter else ""
+        logger.info("Starting %d workers%s, output: %s", num_workers, filter_desc, shared_jsonl)
+
+        procs = []
+        for i in range(num_workers):
             cmd = [
                 sys.executable, worker_script,
-                "--output", output_file,
-                "--n", str(ep_count),
+                "--output", str(shared_jsonl),
+                "--max-episodes", "1000",
                 "--env", env_name,
                 "--env-kwargs", _json.dumps(env_kwargs),
                 "--backend-type", "api",
@@ -180,53 +187,96 @@ class TrajectoryCollector:
                 "--max-tokens", str(max_tokens),
                 "--temperature", str(temperature),
             ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            procs.append((proc, output_file))
-            logger.info("  Worker %d: PID %d, %d episodes", i, proc.pid, ep_count)
+            if task_type_filter:
+                cmd.extend(["--task-type-filter", task_type_filter])
+            if only_successful:
+                cmd.append("--only-successful")
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            procs.append(proc)
 
-        # Wait for all
-        for proc, _ in procs:
-            proc.wait()
+        logger.info("  %d workers launched", num_workers)
 
-        # Collect results from JSON files
-        trajectories: list[Trajectory] = []
-        for i, (proc, output_file) in enumerate(procs):
+        def read_jsonl() -> list[dict]:
+            records = []
             try:
-                data = _json.loads(Path(output_file).read_text())
-                for d in data:
-                    steps = [
-                        Step(
-                            observation=Observation(text=s.get("observation", "")),
-                            action=Action(text=s.get("action", ""),
-                                          action_type=s.get("action_type", "text")),
-                            next_observation=(
-                                Observation(text=s["next_observation"])
-                                if s.get("next_observation") else None
-                            ),
-                            reward=s.get("reward", 0.0),
-                            done=s.get("done", False),
-                            info=s.get("info", {}),
-                        )
-                        for s in d.get("steps", [])
-                    ]
-                    traj = Trajectory(
-                        steps=steps,
-                        task_id=d.get("task_id", ""),
-                        task_type=d.get("task_type", ""),
-                        total_reward=d.get("total_reward", 0.0),
-                        success=d.get("success", False),
-                        metadata=d.get("metadata", {}),
-                    )
-                    trajectories.append(traj)
-            except Exception as e:
-                # Check stderr for error details
-                stderr = procs[i][0].stderr.read().decode()[-500:] if procs[i][0].stderr else ""
-                logger.error("Worker %d failed: %s\nstderr: %s", i, e, stderr)
+                for line in shared_jsonl.read_text().strip().split("\n"):
+                    if line.strip():
+                        records.append(_json.loads(line))
+            except Exception:
+                pass
+            return records
+
+        def count_by_type(records):
+            counts: dict[str, int] = {}
+            for r in records:
+                tt = r.get("task_type", "unknown")
+                counts[tt] = counts.get(tt, 0) + 1
+            return counts
+
+        try:
+            while True:
+                time.sleep(poll_interval)
+                records = read_jsonl()
+                counts = count_by_type(records)
+                total = len(records)
+
+                if target_per_type:
+                    short = {tt: target - counts.get(tt, 0)
+                             for tt, target in target_per_type.items()
+                             if counts.get(tt, 0) < target}
+                    logger.info("  Progress: %d total, by type: %s, still need: %s",
+                                total, counts, short if short else "DONE")
+                    if not short:
+                        break
+                else:
+                    logger.info("  Progress: %d / %d", total, n)
+                    if total >= n:
+                        break
+
+                alive = sum(1 for p in procs if p.poll() is None)
+                if alive == 0:
+                    logger.warning("All workers exited")
+                    break
+        finally:
+            for proc in procs:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+
+        # Parse JSONL into Trajectory objects
+        records = read_jsonl()
+        trajectories: list[Trajectory] = []
+        for d in records:
+            steps = [
+                Step(
+                    observation=Observation(text=s.get("observation", "")),
+                    action=Action(text=s.get("action", ""),
+                                  action_type=s.get("action_type", "text")),
+                    next_observation=(
+                        Observation(text=s["next_observation"])
+                        if s.get("next_observation") else None
+                    ),
+                    reward=s.get("reward", 0.0),
+                    done=s.get("done", False),
+                    info=s.get("info", {}),
+                )
+                for s in d.get("steps", [])
+            ]
+            trajectories.append(Trajectory(
+                steps=steps,
+                task_id=d.get("task_id", ""),
+                task_type=d.get("task_type", ""),
+                total_reward=d.get("total_reward", 0.0),
+                success=d.get("success", False),
+                metadata=d.get("metadata", {}),
+            ))
 
         success_count = sum(1 for t in trajectories if t.success)
         logger.info(
-            "Collected %d/%d trajectories (success rate: %.1f%%)",
-            len(trajectories), n,
+            "Collection done: %d trajectories (success rate: %.1f%%)",
+            len(trajectories),
             100 * success_count / max(len(trajectories), 1),
         )
         return trajectories
