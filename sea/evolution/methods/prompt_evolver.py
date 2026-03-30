@@ -68,8 +68,38 @@ class PromptEvolver(Evolver):
             logger.warning("No prompt variants generated")
             return
 
-        # Select best variant (first variant from LLM-ranked generation)
-        best = variants[0]
+        # Evaluate variants: score each by asking the LLM to rank them
+        # against the original prompt's performance analysis
+        if len(variants) > 1:
+            score_prompt = (
+                f"Original prompt performance:\n{analysis}\n\n"
+                "Rank these prompt variants from best to worst (respond with just the numbers):\n"
+            )
+            for i, v in enumerate(variants):
+                score_prompt += f"\n--- Variant {i+1} ---\n{v[:200]}\n"
+
+            score_output = agent.brain.generate(
+                [{"role": "user", "content": score_prompt}],
+                temperature=0.0, max_tokens=50,
+            )
+            # Try to parse ranking — use first mentioned number
+            import re
+            numbers = re.findall(r"\d+", score_output.text)
+            if numbers:
+                best_idx = int(numbers[0]) - 1
+                if 0 <= best_idx < len(variants):
+                    best = variants[best_idx]
+                else:
+                    best = variants[0]
+            else:
+                best = variants[0]
+        else:
+            best = variants[0]
+
+        # Only update if the variant is actually different from current
+        if best.strip() == current_prompt.strip():
+            logger.info("Best variant is identical to current prompt, skipping")
+            return
 
         # Update target
         target.set_evolvable_state(best)

@@ -128,9 +128,15 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
         for d in data:
             skill = self._dict_to_skill(d)
             self._skills[skill.name] = skill
-        # Rebuild embeddings on next ensure_loaded
+        # Rebuild embeddings immediately
         self._embedder = None
         self._index = None
+        self._embeddings.clear()
+        if self._skills:
+            self._ensure_loaded()
+            for name, skill in self._skills.items():
+                self._embeddings[name] = self._embed(skill.description)
+            self._rebuild_index()
 
     def state_dict(self) -> dict[str, Any]:
         return {"num_skills": len(self._skills), "skill_names": list(self._skills.keys())}

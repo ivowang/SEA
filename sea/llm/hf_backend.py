@@ -79,17 +79,32 @@ class HFTrainingBackend:
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
         logger.info("Loading base model: %s on %s", self._model_name, self._device)
-        model = AutoModelForCausalLM.from_pretrained(
-            self._model_name,
-            torch_dtype=torch_dtype,
-            device_map=self._device,
-            trust_remote_code=self._trust_remote_code,
-            quantization_config=quantization_config,
-        )
+        # Use device_map="auto" for quantized models, explicit device for others
+        if quantization_config:
+            model = AutoModelForCausalLM.from_pretrained(
+                self._model_name,
+                torch_dtype=torch_dtype,
+                device_map="auto",
+                trust_remote_code=self._trust_remote_code,
+                quantization_config=quantization_config,
+            )
+            # Prepare quantized model for training (freeze base, enable grad for adapters)
+            try:
+                from peft import prepare_model_for_kbit_training
+                model = prepare_model_for_kbit_training(model)
+            except ImportError:
+                pass
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                self._model_name,
+                torch_dtype=torch_dtype,
+                device_map=self._device,
+                trust_remote_code=self._trust_remote_code,
+            )
 
         if adapter_path is not None:
             logger.info("Loading existing adapter from: %s", adapter_path)
-            model = PeftModel.from_pretrained(model, str(adapter_path))
+            model = PeftModel.from_pretrained(model, str(adapter_path), is_trainable=True)
         else:
             defaults = {
                 "r": 16,

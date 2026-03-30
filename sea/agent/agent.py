@@ -81,10 +81,15 @@ class SEAAgent(Checkpointable):
             step_number=step,
         )
 
-        action = self.planner.plan(self.brain, context)
+        # Plan → execute tools in a loop → return final env action
+        max_tool_rounds = 3
+        for _ in range(max_tool_rounds):
+            action = self.planner.plan(self.brain, context)
 
-        # Handle tool calls
-        if action.action_type == "tool_call" and "tool_name" in action.metadata:
+            if action.action_type != "tool_call" or "tool_name" not in action.metadata:
+                break  # not a tool call — return as env action
+
+            # Execute tool internally
             tool_name = action.metadata["tool_name"]
             try:
                 raw_args = action.metadata.get("tool_args_raw", "{}")
@@ -92,8 +97,13 @@ class SEAAgent(Checkpointable):
             except json.JSONDecodeError:
                 tool_args = {"input": raw_args}
             result = self.tool_registry.execute(tool_name, **tool_args)
-            action.metadata["tool_result"] = result.output
-            action.metadata["tool_success"] = result.success
+
+            # Feed tool result back to planner as an observation for re-planning
+            tool_obs = f"Tool '{tool_name}' returned: {result.output}"
+            context.observation = Observation(
+                text=tool_obs,
+                available_actions=context.observation.available_actions,
+            )
 
         return action
 

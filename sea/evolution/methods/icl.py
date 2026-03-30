@@ -116,16 +116,36 @@ class ICLEvolver(Evolver):
         )
 
     def _generate_reflection(self, agent: SEAAgent, traj: Trajectory) -> str:
-        """Use the agent's brain to reflect on a failed trajectory."""
+        """Use the agent's brain to reflect on a failed trajectory.
+
+        Includes: goal, initial observation, all actions with env feedback,
+        and terminal outcome — following Reflexion (Shinn et al. 2023).
+        """
+        task_desc = traj.metadata.get("task_description", traj.task_id)
+
+        # Initial observation
+        initial_obs = traj.steps[0].observation.text[:300] if traj.steps else ""
+
+        # Compressed step summary (all steps, not just last 8)
         steps_summary = []
-        for i, s in enumerate(traj.steps[-8:]):
-            line = f"Step {i}: Action='{s.action.text}'"
+        for i, s in enumerate(traj.steps):
+            line = f"Step {i+1}: Action: {s.action.text}"
             if s.next_observation:
-                line += f" -> Result: {s.next_observation.text[:150]}"
-            line += f" (reward={s.reward})"
+                result = s.next_observation.text[:150]
+                line += f" → {result}"
+            if s.reward != 0:
+                line += f" (reward={s.reward})"
             steps_summary.append(line)
 
-        task_desc = traj.metadata.get("task_description", traj.task_id)
+        # Terminal info
+        final_step = traj.steps[-1] if traj.steps else None
+        terminal = ""
+        if final_step:
+            if final_step.done:
+                terminal = "Episode ended (task failed)."
+            if final_step.info.get("success"):
+                terminal = "Task completed successfully."
+
         messages = [
             {
                 "role": "system",
@@ -133,16 +153,19 @@ class ICLEvolver(Evolver):
                     "You are analyzing a failed agent trajectory. "
                     "Provide a concise, specific reflection: what went wrong "
                     "and what exact actions should be taken instead. "
-                    "Reference specific items, recipes, or steps."
+                    "Reference specific objects, locations, or steps from the trajectory."
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     f"Goal: {task_desc}\n"
+                    f"Initial observation: {initial_obs}\n"
                     f"Total reward: {traj.total_reward}\n"
-                    f"Steps ({len(traj)}):\n" + "\n".join(steps_summary) + "\n\n"
-                    "What went wrong and what should be done differently?"
+                    f"Outcome: {terminal}\n\n"
+                    f"Full trajectory ({len(traj)} steps):\n"
+                    + "\n".join(steps_summary) + "\n\n"
+                    "What went wrong and what should be done differently next time?"
                 ),
             },
         ]

@@ -48,10 +48,14 @@ class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
             overlap = len(query_words & content_words)
             if overlap == 0:
                 continue  # skip completely irrelevant entries
-            # Boost reflections and exemplars over raw episodic logs
+            # Boost by memory type and stored priority
             type_boost = 0.0
             if entry.memory_type in ("reflection", "semantic"):
                 type_boost = 3.0
+            # ExpeL-style priority stored in metadata
+            priority = entry.metadata.get("priority", 0.0)
+            if isinstance(priority, (int, float)):
+                type_boost += float(priority)
             recency = entry.timestamp
             score = overlap + type_boost + recency * 1e-12
             entry.score = score

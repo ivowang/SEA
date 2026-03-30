@@ -54,10 +54,14 @@ def main():
     if args.task_type_filter:
         env_kwargs["task_type_filter"] = args.task_type_filter
 
-    # Create env
+    # Create env — register all benchmark adapters
     from sea.core.registry import ENV_REGISTRY
     import sea.env.benchmarks.textcraft  # noqa
     import sea.env.benchmarks.alfworld  # noqa
+    try:
+        import sea.env.benchmarks.webshop  # noqa
+    except ImportError:
+        pass  # WebShop not installed
     env = ENV_REGISTRY.build(args.env, **env_kwargs)
 
     # Create agent

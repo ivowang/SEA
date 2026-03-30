@@ -38,11 +38,15 @@ def trajectories_to_sft_data(
             messages.append({"role": "user", "content": traj.steps[0].observation.text})
 
         for step in traj.steps:
-            # Agent's action as assistant message
-            action_text = step.action.text
-            thought = step.action.metadata.get("thought", "")
-            if thought:
-                action_text = f"Thought: {thought}\nAction: {action_text}"
+            # Agent's action as assistant message — preserve raw ReAct format
+            raw = step.action.metadata.get("raw_response", "")
+            if raw:
+                action_text = raw
+            else:
+                action_text = step.action.text
+                thought = step.action.metadata.get("thought", "")
+                if thought:
+                    action_text = f"Thought: {thought}\nAction: {action_text}"
             messages.append({"role": "assistant", "content": action_text})
 
             # Environment's response as user message (use next_observation if available)
@@ -81,15 +85,29 @@ def trajectories_to_preference_pairs(
         good = [t for t in task_trajs if t.total_reward > reward_threshold or t.success]
         bad = [t for t in task_trajs if t.total_reward <= reward_threshold and not t.success]
 
+        def traj_to_chat(traj: Trajectory) -> str:
+            """Convert trajectory to multi-turn ReAct chat string."""
+            turns = []
+            for s in traj.steps:
+                thought = s.action.metadata.get("thought", "")
+                action_text = s.action.text
+                if thought:
+                    turns.append(f"Thought: {thought}\nAction: {action_text}")
+                else:
+                    turns.append(f"Action: {action_text}")
+                if s.next_observation:
+                    turns.append(f"Observation: {s.next_observation.text[:200]}")
+            return "\n".join(turns)
+
         for g in good:
             for b in bad:
-                prompt = g.steps[0].observation.text if g.steps else ""
-                chosen = " ".join(s.action.text for s in g.steps)
-                rejected = " ".join(s.action.text for s in b.steps)
+                prompt = g.metadata.get("task_description", "")
+                if not prompt and g.steps:
+                    prompt = g.steps[0].observation.text
                 pairs.append({
                     "prompt": prompt,
-                    "chosen": chosen,
-                    "rejected": rejected,
+                    "chosen": traj_to_chat(g),
+                    "rejected": traj_to_chat(b),
                     "task_id": task_id,
                 })
 

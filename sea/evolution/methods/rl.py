@@ -138,6 +138,12 @@ class RLEvolver(Evolver):
 
         The reward function parses model completions into actions,
         executes them in the environment, and returns real rewards.
+
+        LIMITATION: GRPO generates a single completion per prompt and
+        replays parsed actions. This is a single-turn approximation —
+        the model cannot observe intermediate env states during generation.
+        For faithful multi-step interactive RL, use DPO with collected
+        trajectory pairs instead, or implement step-wise online rollouts.
         """
         from trl import GRPOConfig, GRPOTrainer
         from sea.llm.hf_backend import HFTrainingBackend
