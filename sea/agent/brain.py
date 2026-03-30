@@ -42,9 +42,11 @@ class LLMBrain(Evolvable[dict[str, Any]]):
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
 
-        # Load LoRA if specified
+        # Load LoRA if specified — auto-assign name if not provided
         if lora_path and backend.supports_lora():
-            backend.load_lora(lora_path, name=lora_name)
+            if not self.lora_name:
+                self.lora_name = "default"
+            backend.load_lora(lora_path, name=self.lora_name)
 
     def generate(
         self,
