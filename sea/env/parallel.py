@@ -38,6 +38,11 @@ class ParallelEnvRunner:
     ) -> list[Trajectory]:
         """Collect *n* trajectories in parallel.
 
+        WARNING: This shares a single agent across threads. The agent's
+        planner state is not thread-safe, so results may be corrupted
+        for multi-step episodes. For reliable parallel collection, use
+        TrajectoryCollector.collect_subprocess() instead.
+
         Args:
             agent: The agent to run episodes with.
             n: Number of trajectories to collect.
@@ -46,6 +51,8 @@ class ParallelEnvRunner:
         Returns:
             List of collected trajectories.
         """
+        logger.warning("ParallelEnvRunner shares agent state across threads — "
+                        "use collect_subprocess() for reliable parallelism")
         trajectories: list[Trajectory] = []
         remaining = n
         batch = 0

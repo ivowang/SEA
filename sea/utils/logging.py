@@ -13,6 +13,8 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
 
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_file:
+        from pathlib import Path
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
 
     logging.basicConfig(
