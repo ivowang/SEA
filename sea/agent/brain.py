@@ -84,9 +84,15 @@ class LLMBrain(Evolvable[dict[str, Any]]):
         )
 
     def swap_lora(self, path: str, name: str | None = None) -> None:
-        """Hot-swap to a new LoRA adapter."""
+        """Hot-swap to a new LoRA adapter, unloading the previous one."""
         if not self.backend.supports_lora():
             raise RuntimeError(f"Backend {type(self.backend).__name__} does not support LoRA")
+        # Unload previous adapter to avoid memory leak
+        if self.lora_name:
+            try:
+                self.backend.unload_lora(self.lora_name)
+            except Exception:
+                pass  # may not exist or already unloaded
         name = name or "default"
         self.backend.load_lora(path, name=name)
         self.lora_name = name
