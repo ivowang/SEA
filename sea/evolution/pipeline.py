@@ -143,12 +143,16 @@ class EvolutionPipeline:
         )
 
     def _save_checkpoint(self, iteration: int) -> None:
-        """Save agent and evolver states."""
+        """Save agent, evolver, and extra target states."""
         ckpt_dir = self._checkpoint_dir / f"iter_{iteration}"
         try:
             self.agent.save_checkpoint(ckpt_dir / "agent")
             for evolver, name in self.evolvers:
                 evolver.save_checkpoint(ckpt_dir / f"evolver_{name}")
+            # Also checkpoint explicit evolution targets
+            for name, target in self._extra_targets.items():
+                if hasattr(target, "save_checkpoint"):
+                    target.save_checkpoint(ckpt_dir / f"target_{name}")
             logger.info("Checkpoint saved: %s", ckpt_dir)
         except Exception as e:
             logger.error("Checkpoint failed: %s", e)

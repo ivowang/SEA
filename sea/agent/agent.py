@@ -206,10 +206,15 @@ class SEAAgent(Checkpointable):
         return trajectory
 
     def evolvable_components(self) -> dict[str, Evolvable]:
-        """Return all components that implement Evolvable, keyed by name."""
+        """Return components that implement Evolvable, keyed by name.
+
+        NOTE: 'brain' (LLMBrain) is intentionally excluded. Its dict-shaped
+        state is not compatible with SFT/RL evolvers that expect Path-based
+        LoRA targets. Use explicit LoRATarget or PromptTarget via
+        EvolutionPipeline(extra_targets={...}) instead.
+        """
         result: dict[str, Evolvable] = {}
         candidates = [
-            ("brain", self.brain),
             ("memory", self.memory),
             ("skill_library", self.skill_library),
         ]
