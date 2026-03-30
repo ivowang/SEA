@@ -120,6 +120,8 @@ class LoRATarget(Evolvable[Path]):
             "adapter_dir": str(self.adapter_dir),
             "lora_config": self.lora_config,
             "version": self._version,
+            "r_sum": self.r_sum,
+            "adapter_history": {k: str(v) for k, v in self.adapter_history.items()},
         }
         (path / "lora_target.json").write_text(json.dumps(state, indent=2))
 
@@ -131,6 +133,10 @@ class LoRATarget(Evolvable[Path]):
             self.adapter_dir = Path(state["adapter_dir"])
             self.lora_config = state["lora_config"]
             self._version = state["version"]
+            self.r_sum = state.get("r_sum", 0)
+            self.adapter_history = {
+                k: Path(v) for k, v in state.get("adapter_history", {}).items()
+            }
 
     def state_dict(self) -> dict[str, Any]:
         return self.evolution_metadata()

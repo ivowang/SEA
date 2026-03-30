@@ -45,15 +45,17 @@ class EvolutionPipeline:
         self,
         agent: SEAAgent,
         envs: list[SEAEnv],
-        evolvers: list[tuple[Evolver, str]],  # (evolver, target_component_name)
+        evolvers: list[tuple[Evolver, str]],  # (evolver, target_name)
         evaluator: Evaluator,
         metrics: MetricsTracker,
         config: EvolutionConfig | None = None,
+        extra_targets: dict[str, Any] | None = None,
     ) -> None:
         self.agent = agent
         self.envs = envs
         self.evolvers = evolvers
         self.evaluator = evaluator
+        self._extra_targets = extra_targets or {}  # explicit LoRATarget/PromptTarget etc.
         self.metrics = metrics
         self.config = config or EvolutionConfig()
         self.buffer = TrajectoryBuffer()
@@ -93,11 +95,12 @@ class EvolutionPipeline:
                     "collect/num_trajectories": len(trajectories),
                 })
 
-            # 2. Evolve each target
-            evolvable_components = self.agent.evolvable_components()
+            # 2. Evolve each target (check agent components + explicit extra targets)
+            evolvable_components = {**self.agent.evolvable_components(), **self._extra_targets}
             for evolver, target_name in self.evolvers:
                 if target_name not in evolvable_components:
-                    logger.warning("Target '%s' not found in agent's evolvable components", target_name)
+                    logger.warning("Target '%s' not found (available: %s)",
+                                   target_name, list(evolvable_components.keys()))
                     continue
                 target = evolvable_components[target_name]
 
@@ -112,13 +115,13 @@ class EvolutionPipeline:
                     logger.error("Evolution failed for '%s': %s", target_name, e, exc_info=True)
 
             # 3. Periodic evaluation
-            if iteration % self.config.eval_every == 0:
+            if self.config.eval_every and iteration % self.config.eval_every == 0:
                 logger.info("Iteration %d: evaluating...", iteration)
                 eval_results = self.evaluator.evaluate(self.agent, self.envs)
                 self.metrics.log_eval(eval_results, step=iteration)
 
             # 4. Periodic checkpoint
-            if iteration % self.config.checkpoint_every == 0:
+            if self.config.checkpoint_every and iteration % self.config.checkpoint_every == 0:
                 self._save_checkpoint(iteration)
 
             iter_time = time.time() - iter_start

@@ -89,26 +89,30 @@ class TrajectoryCollector:
         envs: list[SEAEnv],
         n: int,
         task_ids: list[str] | None = None,
-        task_type_filter: str | None = None,
     ) -> list[Trajectory]:
-        """Collect n trajectories sequentially.
+        """Collect n trajectories sequentially on envs[0].
 
         For parallel collection, use collect_subprocess() instead.
         """
+        if not envs:
+            raise ValueError("At least one environment required")
+
+        env = envs[0]
         if task_ids is None:
-            all_tasks = []
-            for env in envs:
-                all_tasks.extend(env.get_task_ids())
+            all_tasks = list(env.get_task_ids())
             random.shuffle(all_tasks)
         else:
             all_tasks = list(task_ids)
+
+        if not all_tasks:
+            raise ValueError("No task IDs available")
 
         assigned = [all_tasks[i % len(all_tasks)] for i in range(n)]
         trajectories: list[Trajectory] = []
 
         for task_id in assigned:
             try:
-                traj = agent.run_episode(envs[0], task_id=task_id)
+                traj = agent.run_episode(env, task_id=task_id)
                 trajectories.append(traj)
                 self.buffer.add(traj)
             except Exception as e:
