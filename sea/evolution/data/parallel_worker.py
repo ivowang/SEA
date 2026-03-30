@@ -103,6 +103,7 @@ def main():
                 "steps": [
                     {
                         "observation": s.observation.text[:500],
+                        "available_actions": s.observation.available_actions,
                         "action": s.action.text,
                         "action_type": s.action.action_type,
                         "action_metadata": {
@@ -110,6 +111,7 @@ def main():
                             for k, v in s.action.metadata.items()
                         },
                         "next_observation": s.next_observation.text[:500] if s.next_observation else "",
+                        "next_available_actions": s.next_observation.available_actions if s.next_observation else None,
                         "reward": s.reward,
                         "done": s.done,
                         "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},

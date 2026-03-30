@@ -94,12 +94,19 @@ def trajectories_to_preference_pairs(
     Returns:
         List of dicts with "prompt", "chosen", "rejected" keys.
     """
-    by_task: dict[str, list[Trajectory]] = {}
+    # Group trajectories by their initial observation (the actual task/goal),
+    # NOT by task_id (which can be a fabricated per-process counter like "game_1")
+    by_initial_obs: dict[str, list[Trajectory]] = {}
     for traj in trajectories:
-        by_task.setdefault(traj.task_id, []).append(traj)
+        if traj.steps:
+            key = traj.steps[0].observation.text[:200]
+        else:
+            key = traj.task_id
+        by_initial_obs.setdefault(key, []).append(traj)
 
     pairs = []
-    for task_id, task_trajs in by_task.items():
+    for task_key, task_trajs in by_initial_obs.items():
+        task_id = task_trajs[0].task_id if task_trajs else ""
         good = [t for t in task_trajs if t.total_reward > reward_threshold or t.success]
         bad = [t for t in task_trajs if t.total_reward <= reward_threshold and not t.success]
 
@@ -130,7 +137,7 @@ def trajectories_to_preference_pairs(
                                 })
                             break  # only first match per good step
 
-    logger.info("Created %d preference pairs from %d tasks", len(pairs), len(by_task))
+    logger.info("Created %d preference pairs from %d task groups", len(pairs), len(by_initial_obs))
     return pairs
 
 

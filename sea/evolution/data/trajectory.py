@@ -251,12 +251,18 @@ class TrajectoryCollector:
         for d in records:
             steps = [
                 Step(
-                    observation=Observation(text=s.get("observation", "")),
+                    observation=Observation(
+                        text=s.get("observation", ""),
+                        available_actions=s.get("available_actions"),
+                    ),
                     action=Action(text=s.get("action", ""),
                                   action_type=s.get("action_type", "text"),
                                   metadata=s.get("action_metadata", {})),
                     next_observation=(
-                        Observation(text=s["next_observation"])
+                        Observation(
+                            text=s["next_observation"],
+                            available_actions=s.get("next_available_actions"),
+                        )
                         if s.get("next_observation") else None
                     ),
                     reward=s.get("reward", 0.0),
