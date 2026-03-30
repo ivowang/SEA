@@ -9,6 +9,13 @@ from sea.core.types import Trajectory
 
 logger = logging.getLogger(__name__)
 
+# ReAct format instructions — included in SFT system prompt
+# to match the inference-time planner prompt
+REACT_INSTRUCTIONS = (
+    "For each step, think about what to do (Thought), then take an action (Action).\n"
+    "Format: Thought: <reasoning>\\nAction: <action>"
+)
+
 
 def trajectories_to_sft_data(
     trajectories: list[Trajectory],
@@ -18,6 +25,8 @@ def trajectories_to_sft_data(
     """Convert successful trajectories to instruction-following format.
 
     Each trajectory becomes a multi-turn conversation suitable for SFT.
+    The system prompt includes ReAct formatting instructions to match
+    the inference-time prompt structure.
 
     Returns:
         List of dicts with "messages" key (OpenAI chat format).
@@ -27,15 +36,21 @@ def trajectories_to_sft_data(
         if not traj.steps:
             continue
         messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        # Include ReAct instructions in system prompt for format consistency
+        full_system = system_prompt
+        if full_system and "Thought" not in full_system and "Action" not in full_system:
+            full_system = f"{full_system}\n\n{REACT_INSTRUCTIONS}"
+        elif not full_system:
+            full_system = REACT_INSTRUCTIONS
+        messages.append({"role": "system", "content": full_system})
 
-        # Task description as first user message
+        # First user message: initial observation (matches what planner sees at inference time)
+        initial_obs = traj.steps[0].observation.text if traj.steps else ""
         task_desc = traj.metadata.get("task_description", "")
-        if task_desc:
+        if initial_obs:
+            messages.append({"role": "user", "content": initial_obs})
+        elif task_desc:
             messages.append({"role": "user", "content": task_desc})
-        elif traj.steps:
-            messages.append({"role": "user", "content": traj.steps[0].observation.text})
 
         for step in traj.steps:
             # Agent's action as assistant message — preserve raw ReAct format
@@ -85,18 +100,23 @@ def trajectories_to_preference_pairs(
         good = [t for t in task_trajs if t.total_reward > reward_threshold or t.success]
         bad = [t for t in task_trajs if t.total_reward <= reward_threshold and not t.success]
 
-        def traj_to_chat(traj: Trajectory) -> str:
-            """Convert trajectory to multi-turn ReAct chat string."""
+        def traj_to_assistant_text(traj: Trajectory) -> str:
+            """Convert trajectory to assistant-only continuation (no env observations).
+
+            DPO chosen/rejected must be model outputs only, not interleaved
+            with environment responses.
+            """
             turns = []
             for s in traj.steps:
-                thought = s.action.metadata.get("thought", "")
-                action_text = s.action.text
-                if thought:
-                    turns.append(f"Thought: {thought}\nAction: {action_text}")
+                raw = s.action.metadata.get("raw_response", "")
+                if raw:
+                    turns.append(raw)
                 else:
-                    turns.append(f"Action: {action_text}")
-                if s.next_observation:
-                    turns.append(f"Observation: {s.next_observation.text[:200]}")
+                    thought = s.action.metadata.get("thought", "")
+                    if thought:
+                        turns.append(f"Thought: {thought}\nAction: {s.action.text}")
+                    else:
+                        turns.append(f"Action: {s.action.text}")
             return "\n".join(turns)
 
         for g in good:
@@ -106,8 +126,8 @@ def trajectories_to_preference_pairs(
                     prompt = g.steps[0].observation.text
                 pairs.append({
                     "prompt": prompt,
-                    "chosen": traj_to_chat(g),
-                    "rejected": traj_to_chat(b),
+                    "chosen": traj_to_assistant_text(g),
+                    "rejected": traj_to_assistant_text(b),
                     "task_id": task_id,
                 })
 

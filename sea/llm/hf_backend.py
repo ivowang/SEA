@@ -79,28 +79,29 @@ class HFTrainingBackend:
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
         logger.info("Loading base model: %s on %s", self._model_name, self._device)
-        # Use device_map="auto" for quantized models, explicit device for others
+
+        load_kwargs: dict[str, Any] = {
+            "torch_dtype": torch_dtype,
+            "trust_remote_code": self._trust_remote_code,
+        }
+
         if quantization_config:
-            model = AutoModelForCausalLM.from_pretrained(
-                self._model_name,
-                torch_dtype=torch_dtype,
-                device_map="auto",
-                trust_remote_code=self._trust_remote_code,
-                quantization_config=quantization_config,
-            )
-            # Prepare quantized model for training (freeze base, enable grad for adapters)
+            # Quantized models need device_map for mixed-precision placement
+            # Use a single-device map pointing to our training GPU
+            load_kwargs["quantization_config"] = quantization_config
+            load_kwargs["device_map"] = {"": self._device}
+        else:
+            # Full precision: load to CPU then move to target device
+            load_kwargs["device_map"] = {"": self._device}
+
+        model = AutoModelForCausalLM.from_pretrained(self._model_name, **load_kwargs)
+
+        if quantization_config:
             try:
                 from peft import prepare_model_for_kbit_training
                 model = prepare_model_for_kbit_training(model)
             except ImportError:
                 pass
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                self._model_name,
-                torch_dtype=torch_dtype,
-                device_map=self._device,
-                trust_remote_code=self._trust_remote_code,
-            )
 
         if adapter_path is not None:
             logger.info("Loading existing adapter from: %s", adapter_path)

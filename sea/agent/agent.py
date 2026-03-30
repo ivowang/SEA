@@ -81,15 +81,15 @@ class SEAAgent(Checkpointable):
             step_number=step,
         )
 
-        # Plan → execute tools in a loop → return final env action
+        # Plan → execute tools internally → re-plan → return env action
         max_tool_rounds = 3
+        action = self.planner.plan(self.brain, context)
+
         for _ in range(max_tool_rounds):
-            action = self.planner.plan(self.brain, context)
-
             if action.action_type != "tool_call" or "tool_name" not in action.metadata:
-                break  # not a tool call — return as env action
+                break  # not a tool call — this is a real env action
 
-            # Execute tool internally
+            # Execute tool internally (not sent to env)
             tool_name = action.metadata["tool_name"]
             try:
                 raw_args = action.metadata.get("tool_args_raw", "{}")
@@ -98,12 +98,20 @@ class SEAAgent(Checkpointable):
                 tool_args = {"input": raw_args}
             result = self.tool_registry.execute(tool_name, **tool_args)
 
-            # Feed tool result back to planner as an observation for re-planning
+            # Feed tool result back and re-plan
             tool_obs = f"Tool '{tool_name}' returned: {result.output}"
             context.observation = Observation(
                 text=tool_obs,
                 available_actions=context.observation.available_actions,
             )
+            action = self.planner.plan(self.brain, context)
+        else:
+            # All rounds were tool calls — force a text action from the last tool result
+            if action.action_type == "tool_call":
+                action = Action(
+                    text=action.metadata.get("tool_result", action.text),
+                    action_type="text",
+                )
 
         return action
 
