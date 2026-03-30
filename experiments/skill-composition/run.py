@@ -22,7 +22,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sea.utils.logging import setup_logging
 
 setup_logging(level="INFO")
