@@ -16,7 +16,6 @@ from sea.agent.brain import LLMBrain
 from sea.agent.memory.base import Memory
 from sea.agent.planner import Planner, PlanningContext
 from sea.agent.skills.library import SkillLibrary
-from sea.agent.tools.base import ToolResult
 from sea.agent.tools.registry import ToolRegistry
 from sea.core.base import Checkpointable, Evolvable
 from sea.core.types import Action, Observation, Step, Trajectory
@@ -125,7 +124,6 @@ class SEAAgent(Checkpointable):
         env: SEAEnv,
         task_id: str | None = None,
         max_steps: int | None = None,
-        eval_mode: bool = False,
     ) -> Trajectory:
         """Run a complete episode in the given environment.
 
@@ -133,7 +131,6 @@ class SEAAgent(Checkpointable):
             env: The environment to interact with.
             task_id: Optional task identifier.
             max_steps: Override for max steps per episode.
-            eval_mode: If True, skip memory writes (side-effect-free evaluation).
 
         Returns:
             Trajectory with all steps, total reward, and success flag.
@@ -155,12 +152,12 @@ class SEAAgent(Checkpointable):
         for step_num in range(max_steps):
             action = self.act(obs, task_description=task_desc, step=step_num)
 
-            # Check if agent wants to finish
+            # Agent-side finish: record the step without sending to env
+            # (env may not understand "finish(...)" as a valid action)
             if action.action_type == "finish":
-                obs_next, reward, terminated, truncated, step_info = env.step(action)
                 trajectory.steps.append(Step(
-                    observation=obs, action=action, next_observation=obs_next,
-                    reward=reward, done=True, info=step_info,
+                    observation=obs, action=action, next_observation=None,
+                    reward=0.0, done=True, info={"agent_finish": True},
                 ))
                 break
 

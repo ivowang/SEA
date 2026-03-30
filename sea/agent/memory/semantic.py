@@ -97,7 +97,8 @@ class SemanticMemory(Memory, Evolvable[list[dict[str, Any]]]):
             self._entries = self._entries[-self._max_size :]
             self._rebuild_index()
 
-    def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
+    def retrieve(self, query: str, k: int = 5, threshold: float = 0.2) -> list[MemoryEntry]:
+        """Retrieve top-k entries above similarity threshold."""
         self._ensure_loaded()
         if not self._entries:
             return []
@@ -107,6 +108,8 @@ class SemanticMemory(Memory, Evolvable[list[dict[str, Any]]]):
         results = []
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self._entries):
+                continue
+            if score < threshold:
                 continue
             entry = self._entries[idx]
             entry.score = float(score)

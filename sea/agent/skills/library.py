@@ -152,8 +152,14 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
         for d in state:
             skill = self._dict_to_skill(d)
             self._skills[skill.name] = skill
+        # Rebuild embeddings and FAISS index (same as load_checkpoint)
         self._embedder = None
         self._index = None
+        if self._skills:
+            self._ensure_loaded()
+            for name, skill in self._skills.items():
+                self._embeddings[name] = self._embed(skill.description)
+            self._rebuild_index()
         logger.info("Updated skill library: %d skills", len(self._skills))
 
     def evolution_metadata(self) -> dict[str, Any]:
