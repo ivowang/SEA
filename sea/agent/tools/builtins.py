@@ -33,12 +33,63 @@ class CalculatorTool(Tool):
         }
 
     def execute(self, expression: str = "", **kwargs: Any) -> ToolResult:
-        safe_dict = {
-            k: getattr(math, k) for k in dir(math) if not k.startswith("_")
+        """Evaluate math expression using AST-based safe evaluation."""
+        import ast
+        import operator
+
+        # Safe operators for mathematical expressions
+        _ops = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
         }
-        safe_dict.update({"abs": abs, "round": round, "min": min, "max": max})
+
+        # Safe math functions
+        _funcs = {
+            "abs": abs, "round": round, "min": min, "max": max,
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
+            "tan": math.tan, "log": math.log, "log10": math.log10,
+            "pi": math.pi, "e": math.e, "ceil": math.ceil, "floor": math.floor,
+        }
+
+        def _safe_eval(node):
+            if isinstance(node, ast.Expression):
+                return _safe_eval(node.body)
+            elif isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError(f"Unsupported constant: {node.value}")
+            elif isinstance(node, ast.BinOp):
+                op = _ops.get(type(node.op))
+                if op is None:
+                    raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+                return op(_safe_eval(node.left), _safe_eval(node.right))
+            elif isinstance(node, ast.UnaryOp):
+                op = _ops.get(type(node.op))
+                if op is None:
+                    raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+                return op(_safe_eval(node.operand))
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in _funcs:
+                    args = [_safe_eval(a) for a in node.args]
+                    return _funcs[node.func.id](*args)
+                raise ValueError(f"Unsupported function: {ast.dump(node.func)}")
+            elif isinstance(node, ast.Name):
+                if node.id in _funcs:
+                    return _funcs[node.id]
+                raise ValueError(f"Unknown name: {node.id}")
+            else:
+                raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
         try:
-            result = eval(expression, {"__builtins__": {}}, safe_dict)  # noqa: S307
+            tree = ast.parse(expression, mode="eval")
+            result = _safe_eval(tree)
             return ToolResult(output=str(result))
         except Exception as e:
             return ToolResult(output=f"Error: {e}", success=False)
