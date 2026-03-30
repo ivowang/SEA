@@ -11,8 +11,11 @@ from typing import Any, TypeVar, Type
 T = TypeVar("T")
 
 
-class Registry(dict[str, Type]):
+class Registry:
     """A named registry that maps string keys to classes.
+
+    Uses composition (not dict inheritance) to prevent bypass
+    of duplicate detection via __setitem__/update/etc.
 
     Usage::
 
@@ -22,38 +25,49 @@ class Registry(dict[str, Type]):
         class ReActPlanner(Planner):
             ...
 
-        # Later, build from config:
         planner = PLANNER_REGISTRY.build("react", brain=brain)
     """
 
     def __init__(self, name: str = "") -> None:
-        super().__init__()
         self.registry_name = name
+        self._entries: dict[str, Type] = {}
 
     def register(self, name: str):
         """Decorator that registers a class under *name*."""
         def decorator(cls: Type[T]) -> Type[T]:
-            if name in self:
+            if name in self._entries:
                 raise KeyError(
                     f"Registry '{self.registry_name}': "
-                    f"name '{name}' already registered to {self[name]}"
+                    f"name '{name}' already registered to {self._entries[name]}"
                 )
-            self[name] = cls
+            self._entries[name] = cls
             return cls
         return decorator
 
     def build(self, name: str, **kwargs: Any):
         """Instantiate the class registered under *name*."""
-        if name not in self:
-            available = ", ".join(sorted(self.keys())) or "(empty)"
+        if name not in self._entries:
+            available = ", ".join(sorted(self._entries.keys())) or "(empty)"
             raise KeyError(
                 f"Registry '{self.registry_name}': "
                 f"'{name}' not found. Available: {available}"
             )
-        return self[name](**kwargs)
+        return self._entries[name](**kwargs)
+
+    def keys(self):
+        return self._entries.keys()
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._entries
+
+    def __getitem__(self, name: str) -> Type:
+        return self._entries[name]
+
+    def __len__(self) -> int:
+        return len(self._entries)
 
     def __repr__(self) -> str:
-        entries = ", ".join(sorted(self.keys()))
+        entries = ", ".join(sorted(self._entries.keys()))
         return f"Registry('{self.registry_name}', [{entries}])"
 
 

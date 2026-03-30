@@ -10,21 +10,25 @@ from typing import Any
 # Agent-environment interaction types
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass
 class Observation:
-    """What the agent perceives from the environment."""
+    """What the agent perceives from the environment.
+
+    Note: not frozen because structured/available_actions are mutable containers.
+    Treat as logically immutable after creation.
+    """
 
     text: str
     structured: dict[str, Any] = field(default_factory=dict)
     available_actions: list[str] | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class Action:
     """What the agent does in the environment."""
 
     text: str
-    action_type: str = "text"  # "text", "code", "tool_call"
+    action_type: str = "text"  # "text", "code", "tool_call", "finish"
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,7 +84,7 @@ class GenerationOutput:
 # Message types for LLM interaction
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass
 class Message:
     """A single message in a conversation."""
 
@@ -90,7 +94,8 @@ class Message:
     tool_call_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_api_dict(self) -> dict[str, Any]:
+        """Convert to OpenAI API format (excludes metadata)."""
         d: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.name is not None:
             d["name"] = self.name

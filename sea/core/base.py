@@ -32,6 +32,14 @@ class Checkpointable(ABC):
         """Return a serialisable snapshot of the current state."""
         ...
 
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore state from a dict (in-memory counterpart of load_checkpoint).
+
+        Optional — subclasses can override for in-memory restore workflows.
+        Default raises NotImplementedError.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement load_state_dict")
+
 
 class Evolvable(Checkpointable, Generic[T]):
     """A component that is a target of evolution.
