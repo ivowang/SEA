@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import gc
 import json
+import json as _json
 import logging
 import os
 import sys
@@ -35,11 +36,12 @@ logger = logging.getLogger("olora_continual")
 API_KEY = os.environ.get("SEA_API_KEY", "")
 BASE_URL = os.environ.get("SEA_BASE_URL", "https://api.aigocode.com/v1")
 API_MODEL = "openai/gpt-5.4-nano"
-MODEL_PATH = os.environ.get("SEA_MODEL_PATH", "/root/models/Qwen3.5-9B")
+MODEL_PATH = os.environ.get("SEA_MODEL_PATH", "/root/models/Qwen2.5-7B-Instruct")
 
 TASK_SEQUENCE = ["pick", "clean", "heat", "cool", "examine", "pick_two"]
-NUM_COLLECT_PER_TASK = 15
-NUM_EVAL_PER_TYPE = 5  # eval episodes per task type
+NUM_COLLECT_PER_TASK = 300  # training trajectories per task type
+NUM_EVAL_PER_TYPE = 50     # eval episodes per task type
+NUM_WORKERS = 30            # parallel collection workers
 LORA_RANK = 8
 
 OUTPUT_DIR = Path("ideas/olora-continual/outputs")
@@ -102,7 +104,7 @@ from sea.evolution.targets.lm_params import LoRATarget
 from sea.metrics.tracker import MetricsTracker
 from sea.metrics.reporters.console import ConsoleReporter
 from sea.metrics.evaluator import Evaluator
-from sea.core.types import Trajectory
+from sea.core.types import Action, Observation, Step, Trajectory
 
 
 if __name__ == "__main__":
@@ -129,38 +131,100 @@ if __name__ == "__main__":
     logger.info("Phase 1: Collecting trajectories via API (%s)", API_MODEL)
     logger.info("=" * 60)
 
-    # Collect ALL episodes using subprocess parallelism (30 workers).
-    # Each subprocess has its own ALFWorld + API client, fully isolated.
-    total_episodes = NUM_COLLECT_PER_TASK * len(TASK_SEQUENCE)
-    NUM_WORKERS = 30
+    TRAJ_DIR = OUTPUT_DIR / "trajectories"
+    TRAJ_DIR.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Collecting %d episodes with %d parallel subprocess workers ...",
-                total_episodes, NUM_WORKERS)
-
-    all_trajs = TrajectoryCollector.collect_subprocess(
-        n=total_episodes,
-        num_workers=NUM_WORKERS,
-        env_name="alfworld",
-        env_kwargs={"split": "eval_out_of_distribution", "max_steps_val": 30},
-        backend_kwargs={"model": API_MODEL, "base_url": BASE_URL, "api_key": API_KEY},
-        system_prompt=SYSTEM_PROMPT,
-        max_tokens=150,
-        temperature=0.7,
-    )
-
-    # Group by task type
     all_trajectories: dict[str, list[Trajectory]] = {tt: [] for tt in TASK_SEQUENCE}
-    for traj in all_trajs:
-        tt = traj.task_type
-        if tt in all_trajectories:
-            all_trajectories[tt].append(traj)
-        else:
-            # Unknown type — assign to closest match or skip
-            all_trajectories.setdefault("unknown", []).append(traj)
+
+    # Check existing data on disk — skip collection if enough data exists
+    need_collect = False
+    for tt in TASK_SEQUENCE:
+        traj_file = TRAJ_DIR / f"{tt}.json"
+        if traj_file.exists():
+            data = _json.loads(traj_file.read_text())
+            logger.info("  Found %d existing trajectories for '%s'", len(data), tt)
+            if len(data) >= NUM_COLLECT_PER_TASK:
+                # Reconstruct Trajectory objects from saved JSON
+                for d in data[:NUM_COLLECT_PER_TASK]:
+                    steps = [
+                        Step(
+                            observation=Observation(text=s.get("observation", "")),
+                            action=Action(text=s.get("action", ""), action_type=s.get("action_type", "text")),
+                            next_observation=Observation(text=s["next_observation"]) if s.get("next_observation") else None,
+                            reward=s.get("reward", 0.0),
+                            done=s.get("done", False),
+                            info=s.get("info", {}),
+                        )
+                        for s in d.get("steps", [])
+                    ]
+                    traj = Trajectory(
+                        steps=steps, task_id=d.get("task_id", ""),
+                        task_type=d.get("task_type", tt),
+                        total_reward=d.get("total_reward", 0.0),
+                        success=d.get("success", False),
+                        metadata=d.get("metadata", {}),
+                    )
+                    all_trajectories[tt].append(traj)
+                continue
+        need_collect = True
+
+    if need_collect:
+        # Collect everything — we need enough data per task type.
+        # Since ALFWorld cycles games sequentially, we collect a large batch
+        # and distribute by task_type. We over-collect to ensure coverage.
+        total_needed = NUM_COLLECT_PER_TASK * len(TASK_SEQUENCE)
+        # ALFWorld has ~134 games, mostly pick/clean. Over-collect 3x to cover rarer types.
+        total_to_collect = total_needed * 3
+
+        logger.info("Need to collect ~%d episodes (target %d/type × %d types, 3x oversampling)",
+                    total_to_collect, NUM_COLLECT_PER_TASK, len(TASK_SEQUENCE))
+
+        all_trajs = TrajectoryCollector.collect_subprocess(
+            n=total_to_collect,
+            num_workers=NUM_WORKERS,
+            env_name="alfworld",
+            env_kwargs={"split": "eval_out_of_distribution", "max_steps_val": 30},
+            backend_kwargs={"model": API_MODEL, "base_url": BASE_URL, "api_key": API_KEY},
+            system_prompt=SYSTEM_PROMPT,
+            max_tokens=150,
+            temperature=0.7,
+        )
+
+        # Group by task type
+        collected_by_type: dict[str, list[Trajectory]] = {tt: [] for tt in TASK_SEQUENCE}
+        for traj in all_trajs:
+            tt = traj.task_type
+            if tt in collected_by_type:
+                collected_by_type[tt].append(traj)
+
+        # Persist to disk as JSON
+        for tt, trajs in collected_by_type.items():
+            traj_file = TRAJ_DIR / f"{tt}.json"
+            data = []
+            for t in trajs:
+                data.append({
+                    "task_id": t.task_id, "task_type": t.task_type,
+                    "total_reward": t.total_reward, "success": t.success,
+                    "num_steps": len(t), "metadata": t.metadata,
+                    "steps": [
+                        {
+                            "observation": s.observation.text[:500],
+                            "action": s.action.text,
+                            "action_type": s.action.action_type,
+                            "next_observation": s.next_observation.text[:500] if s.next_observation else "",
+                            "reward": s.reward, "done": s.done,
+                            "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
+                        }
+                        for s in t.steps
+                    ],
+                })
+            traj_file.write_text(_json.dumps(data, ensure_ascii=False))
+            logger.info("  Saved %d trajectories for '%s' to %s", len(data), tt, traj_file)
+            all_trajectories[tt] = trajs[:NUM_COLLECT_PER_TASK]
 
     traj_summary = {tt: {"count": len(ts), "success": sum(1 for t in ts if t.success)}
                     for tt, ts in all_trajectories.items() if ts}
-    logger.info("Collection complete: %s", traj_summary)
+    logger.info("Training data ready: %s", traj_summary)
 
     gc.collect()
 
