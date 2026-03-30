@@ -55,10 +55,16 @@ def test_trajectories_to_sft_data():
 
 
 def test_trajectories_to_preference_pairs():
-    trajs = [
-        _make_traj("t1", 1.0, True),
-        _make_traj("t1", 0.0, False),
-    ]
-    pairs = trajectories_to_preference_pairs(trajs)
-    assert len(pairs) == 1
+    good = Trajectory(
+        steps=[Step(observation=Observation(text="start"), action=Action(text="good action"), reward=1.0)],
+        task_id="t1", total_reward=1.0, success=True,
+    )
+    bad = Trajectory(
+        steps=[Step(observation=Observation(text="start"), action=Action(text="bad action"), reward=0.0)],
+        task_id="t1", total_reward=0.0, success=False,
+    )
+    pairs = trajectories_to_preference_pairs([good, bad])
+    assert len(pairs) >= 1
     assert pairs[0]["task_id"] == "t1"
+    assert "good" in pairs[0]["chosen"]
+    assert "bad" in pairs[0]["rejected"]

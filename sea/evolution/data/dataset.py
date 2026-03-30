@@ -86,7 +86,10 @@ def trajectories_to_preference_pairs(
 ) -> list[dict[str, Any]]:
     """Convert trajectories to preference pairs for DPO.
 
-    Groups trajectories by task_id, pairs successful with unsuccessful ones.
+    Creates per-step pairs: at each observation, the chosen response is the
+    action from the successful trajectory and the rejected response is from
+    the failed trajectory. This matches the inference-time single-step
+    decision paradigm.
 
     Returns:
         List of dicts with "prompt", "chosen", "rejected" keys.
@@ -100,36 +103,38 @@ def trajectories_to_preference_pairs(
         good = [t for t in task_trajs if t.total_reward > reward_threshold or t.success]
         bad = [t for t in task_trajs if t.total_reward <= reward_threshold and not t.success]
 
-        def traj_to_assistant_text(traj: Trajectory) -> str:
-            """Convert trajectory to assistant-only continuation (no env observations).
-
-            DPO chosen/rejected must be model outputs only, not interleaved
-            with environment responses.
-            """
-            turns = []
-            for s in traj.steps:
-                raw = s.action.metadata.get("raw_response", "")
-                if raw:
-                    turns.append(raw)
-                else:
-                    thought = s.action.metadata.get("thought", "")
-                    if thought:
-                        turns.append(f"Thought: {thought}\nAction: {s.action.text}")
-                    else:
-                        turns.append(f"Action: {s.action.text}")
-            return "\n".join(turns)
+        def step_to_response(step) -> str:
+            raw = step.action.metadata.get("raw_response", "")
+            if raw:
+                return raw
+            thought = step.action.metadata.get("thought", "")
+            if thought:
+                return f"Thought: {thought}\nAction: {step.action.text}"
+            return f"Action: {step.action.text}"
 
         for g in good:
             for b in bad:
-                prompt = g.metadata.get("task_description", "")
-                if not prompt and g.steps:
-                    prompt = g.steps[0].observation.text
-                pairs.append({
-                    "prompt": prompt,
-                    "chosen": traj_to_assistant_text(g),
-                    "rejected": traj_to_assistant_text(b),
-                    "task_id": task_id,
-                })
+                # Per-step pairs at matching positions
+                min_len = min(len(g.steps), len(b.steps))
+                for i in range(max(min_len, 1)):
+                    if i < len(g.steps) and i < len(b.steps):
+                        prompt = g.steps[i].observation.text
+                        chosen = step_to_response(g.steps[i])
+                        rejected = step_to_response(b.steps[i])
+                    elif i < len(g.steps):
+                        prompt = g.steps[i].observation.text
+                        chosen = step_to_response(g.steps[i])
+                        rejected = "Action: give up"
+                    else:
+                        break
+
+                    if chosen != rejected:
+                        pairs.append({
+                            "prompt": prompt,
+                            "chosen": chosen,
+                            "rejected": rejected,
+                            "task_id": task_id,
+                        })
 
     logger.info("Created %d preference pairs from %d tasks", len(pairs), len(by_task))
     return pairs

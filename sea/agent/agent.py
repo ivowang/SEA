@@ -84,6 +84,8 @@ class SEAAgent(Checkpointable):
         # Plan → execute tools internally → re-plan → return env action
         max_tool_rounds = 3
         action = self.planner.plan(self.brain, context)
+        last_tool_output = ""
+        tool_transcript: list[str] = []  # record tool interactions for training data
 
         for _ in range(max_tool_rounds):
             if action.action_type != "tool_call" or "tool_name" not in action.metadata:
@@ -97,6 +99,8 @@ class SEAAgent(Checkpointable):
             except json.JSONDecodeError:
                 tool_args = {"input": raw_args}
             result = self.tool_registry.execute(tool_name, **tool_args)
+            last_tool_output = result.output
+            tool_transcript.append(f"tool_call({tool_name}) → {result.output[:200]}")
 
             # Feed tool result back and re-plan
             tool_obs = f"Tool '{tool_name}' returned: {result.output}"
@@ -106,12 +110,13 @@ class SEAAgent(Checkpointable):
             )
             action = self.planner.plan(self.brain, context)
         else:
-            # All rounds were tool calls — force a text action from the last tool result
+            # All rounds were tool calls — force a text action from last tool output
             if action.action_type == "tool_call":
-                action = Action(
-                    text=action.metadata.get("tool_result", action.text),
-                    action_type="text",
-                )
+                action = Action(text=last_tool_output or "done", action_type="text")
+
+        # Attach tool transcript to action metadata for training data fidelity
+        if tool_transcript:
+            action.metadata["tool_transcript"] = tool_transcript
 
         return action
 
