@@ -60,7 +60,7 @@ sea-serve = "scripts.serve_model:main"
 sea-collect = "scripts.collect_trajectories:main"
 
 [tool.setuptools.packages.find]
-include = ["sea*"]
+include = ["sea*", "scripts*"]
 
 [tool.ruff]
 line-length = 100

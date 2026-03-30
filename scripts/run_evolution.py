@@ -30,14 +30,10 @@ def build_from_config(cfg):
     """Build all components from a config dict."""
     from omegaconf import OmegaConf
 
-    # Import registries to trigger @register decorators
-    import sea.env.benchmarks.textcraft  # noqa: F401
-    import sea.env.benchmarks.alfworld  # noqa: F401
-    import sea.env.benchmarks.webshop  # noqa: F401
-    import sea.evolution.methods.sft  # noqa: F401
-    import sea.evolution.methods.rl  # noqa: F401
-    import sea.evolution.methods.icl  # noqa: F401
-    import sea.evolution.methods.prompt_evolver  # noqa: F401
+    # Import packages to trigger @register decorators
+    import sea.env  # noqa: F401 — registers env adapters
+    import sea.llm  # noqa: F401 — registers LLM backends
+    import sea.evolution.methods  # noqa: F401 — registers evolvers
     import sea.agent.tools.builtins  # noqa: F401
 
     from sea.core.registry import ENV_REGISTRY, EVOLVER_REGISTRY, LLM_BACKEND_REGISTRY, REPORTER_REGISTRY
