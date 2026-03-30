@@ -92,11 +92,25 @@ class SEAAgent(Checkpointable):
 
             # Execute tool internally (not sent to env)
             tool_name = action.metadata["tool_name"]
+            raw_args = action.metadata.get("tool_args_raw", "{}")
             try:
-                raw_args = action.metadata.get("tool_args_raw", "{}")
                 tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            except json.JSONDecodeError:
-                tool_args = {"input": raw_args}
+                if not isinstance(tool_args, dict):
+                    tool_args = {"value": tool_args}
+            except (json.JSONDecodeError, TypeError):
+                # Map bare value to the tool's first required parameter
+                tool = self.tool_registry.get(tool_name)
+                if tool and tool.parameters_schema:
+                    required = tool.parameters_schema.get("required", [])
+                    props = tool.parameters_schema.get("properties", {})
+                    if required:
+                        tool_args = {required[0]: raw_args}
+                    elif props:
+                        tool_args = {next(iter(props)): raw_args}
+                    else:
+                        tool_args = {"input": raw_args}
+                else:
+                    tool_args = {"input": raw_args}
             result = self.tool_registry.execute(tool_name, **tool_args)
             last_tool_output = result.output
             tool_transcript.append(f"tool_call({tool_name}) → {result.output[:200]}")

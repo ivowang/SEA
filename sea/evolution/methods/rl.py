@@ -205,7 +205,8 @@ class RLEvolver(Evolver):
             num_generations=self._num_generations,
             logging_steps=10,
             save_strategy="no",
-            bf16=True,
+            bf16=(self._torch_dtype == "bfloat16"),
+            fp16=(self._torch_dtype == "float16"),
         )
 
         trainer = GRPOTrainer(
@@ -332,7 +333,8 @@ class RLEvolver(Evolver):
             beta=self._kl_coeff,
             logging_steps=10,
             save_strategy="no",
-            bf16=True,
+            bf16=(self._torch_dtype == "bfloat16"),
+            fp16=(self._torch_dtype == "float16"),
         )
 
         trainer = DPOTrainer(

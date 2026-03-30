@@ -94,7 +94,17 @@ class FunctionEnv(SEAEnv):
         return self._max_steps
 
     def reset(self, *, seed: int | None = None, task_id: str | None = None) -> tuple[Observation, dict[str, Any]]:
-        return self._reset_fn(seed=seed, task_id=task_id) if task_id else self._reset_fn()
+        # Always pass all kwargs to let reset_fn decide what to use
+        kwargs: dict[str, Any] = {}
+        if seed is not None:
+            kwargs["seed"] = seed
+        if task_id is not None:
+            kwargs["task_id"] = task_id
+        try:
+            return self._reset_fn(**kwargs)
+        except TypeError:
+            # Fallback for simple reset_fn() that takes no args
+            return self._reset_fn()
 
     def step(self, action: Action) -> tuple[Observation, float, bool, bool, dict[str, Any]]:
         return self._step_fn(action)

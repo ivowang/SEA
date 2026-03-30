@@ -41,10 +41,11 @@ class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
     def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
         if not self._entries:
             return []
-        query_words = set(query.lower().split())
+        import re
+        query_words = set(re.findall(r"\w+", query.lower()))
         scored = []
         for entry in self._entries:
-            content_words = set(entry.content.lower().split())
+            content_words = set(re.findall(r"\w+", entry.content.lower()))
             overlap = len(query_words & content_words)
             if overlap == 0:
                 continue  # skip completely irrelevant entries

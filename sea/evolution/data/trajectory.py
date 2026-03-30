@@ -284,6 +284,21 @@ class TrajectoryCollector:
                 metadata=d.get("metadata", {}),
             ))
 
+        # Truncate to requested amounts to avoid over-collection
+        if target_per_type:
+            capped: list[Trajectory] = []
+            type_counts: dict[str, int] = {}
+            for t in trajectories:
+                tt = t.task_type
+                limit = target_per_type.get(tt, float("inf"))
+                count = type_counts.get(tt, 0)
+                if count < limit:
+                    capped.append(t)
+                    type_counts[tt] = count + 1
+            trajectories = capped
+        elif n > 0:
+            trajectories = trajectories[:n]
+
         success_count = sum(1 for t in trajectories if t.success)
         logger.info(
             "Collection done: %d trajectories (success rate: %.1f%%)",

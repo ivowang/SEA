@@ -9,10 +9,11 @@ from sea.agent.skills.base import Skill, SkillInfo
 
 
 class CodeSkill(Skill):
-    """A skill stored as executable Python code.
+    """A skill stored as Python code for LLM context.
 
-    Inspired by Voyager's skill library: each skill is a Python function
-    that can be executed in a sandboxed namespace.
+    Inspired by Voyager's skill library. The code is presented to the LLM
+    as part of the planning context via to_prompt(), NOT executed directly.
+    For executable tools, use the ToolRegistry system instead.
     """
 
     def __init__(
@@ -57,14 +58,10 @@ class CodeSkill(Skill):
             examples=data.get("examples", []),
         )
 
-    def execute_in_sandbox(self, **kwargs: Any) -> Any:
-        """Execute the skill code in a restricted namespace."""
-        namespace: dict[str, Any] = {"__builtins__": {}, **kwargs}
-        exec(self.source_code, namespace)  # noqa: S102
-        main_fn = namespace.get("main") or namespace.get(self.name)
-        if callable(main_fn):
-            return main_fn(**kwargs)
-        return namespace
+    # Note: execute_in_sandbox was removed because exec() with empty
+    # __builtins__ is neither safe nor functional. Skills are used as
+    # LLM context via to_prompt(), not executed directly. For executable
+    # capabilities, register a Tool in the ToolRegistry instead.
 
 
 class TextSkill(Skill):

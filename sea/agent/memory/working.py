@@ -28,9 +28,26 @@ class WorkingMemory(Memory):
         self._buffer.append(entry)
 
     def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
-        # Return most recent k entries (newest last)
+        """Return recent entries, prioritizing those relevant to query."""
+        import re
         entries = list(self._buffer)
-        return entries[-k:]
+        if not entries:
+            return []
+
+        query_words = set(re.findall(r"\w+", query.lower()))
+        if not query_words:
+            return entries[-k:]
+
+        # Score by recency + keyword overlap
+        scored = []
+        for i, entry in enumerate(entries):
+            content_words = set(re.findall(r"\w+", entry.content.lower()))
+            overlap = len(query_words & content_words)
+            recency = i / max(len(entries), 1)  # 0..1, higher = more recent
+            score = overlap + recency * 0.5
+            scored.append((score, entry))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [e for _, e in scored[:k]]
 
     def get_all(self) -> list[MemoryEntry]:
         return list(self._buffer)

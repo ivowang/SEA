@@ -13,9 +13,10 @@ def test_working_memory_add_retrieve():
     for i in range(3):
         mem.add(MemoryEntry(content=f"entry_{i}"))
 
-    results = mem.retrieve("anything", k=2)
+    results = mem.retrieve("entry", k=2)  # query with relevant keyword
     assert len(results) == 2
-    assert results[-1].content == "entry_2"  # Most recent
+    # Results are scored by recency + keyword overlap
+    assert any("entry_2" in r.content for r in results)  # most recent included
 
 
 def test_working_memory_overflow():

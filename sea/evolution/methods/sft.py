@@ -141,7 +141,8 @@ class SFTEvolver(Evolver):
             max_length=self._max_length,
             logging_steps=10,
             save_strategy="no",
-            bf16=True,
+            bf16=(self._torch_dtype == "bfloat16"),
+            fp16=(self._torch_dtype == "float16"),
             remove_unused_columns=False,
         )
 

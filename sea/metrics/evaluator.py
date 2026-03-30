@@ -70,16 +70,17 @@ class Evaluator:
         agent.brain.default_temperature = self._eval_temp
 
         try:
-            for env in envs:
+            for env_idx, env in enumerate(envs):
                 env_trajs: list[Trajectory] = []
                 available_tasks = task_ids or env.get_task_ids()
 
                 # Fixed seed ensures same tasks are evaluated every iteration
                 rng = random.Random(self._eval_seed)
-                selected = rng.sample(
-                    available_tasks,
-                    min(self._num_episodes, len(available_tasks)),
-                )
+                n_episodes = min(self._num_episodes, max(len(available_tasks), 1))
+                if available_tasks:
+                    selected = rng.sample(available_tasks, n_episodes)
+                else:
+                    selected = [None] * n_episodes  # ALFWorld: no stable task IDs
 
                 for task_id in selected:
                     try:
@@ -93,7 +94,9 @@ class Evaluator:
                         logger.error("Eval episode failed (env=%s, task=%s): %s",
                                      env.name, task_id, e)
 
-                per_env_results[env.name] = env_trajs
+                # Unique key to avoid collision with multiple envs of same name
+                env_key = f"{env.name}_{env_idx}" if len(envs) > 1 else env.name
+                per_env_results[env_key] = env_trajs
                 all_trajectories.extend(env_trajs)
         finally:
             agent.brain.default_temperature = orig_temp

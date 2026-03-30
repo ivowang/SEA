@@ -20,6 +20,15 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
 
+    @classmethod
+    def with_builtins(cls) -> ToolRegistry:
+        """Create a registry pre-loaded with built-in tools."""
+        reg = cls()
+        from sea.agent.tools.builtins import CalculatorTool, JSONParserTool
+        reg.register(CalculatorTool())
+        reg.register(JSONParserTool())
+        return reg
+
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
         if tool.name in self._tools:

@@ -104,8 +104,16 @@ class ALFWorldEnv(SEAEnv):
         return self._max_steps_val
 
     def get_task_ids(self) -> list[str]:
-        # ALFWorld cycles through games sequentially on reset()
-        return [f"game_{i}" for i in range(134)]
+        """ALFWorld cycles through its game pool sequentially on reset().
+
+        Task IDs are ordinal indices, NOT stable game identifiers. The same
+        index may map to different games across env instances. Use
+        task_type_filter for targeted collection instead of task_id selection.
+        """
+        self._ensure_env()
+        # Return actual count from loaded game files
+        n_games = len(getattr(self._env, 'game_files', [])) if hasattr(self._env, 'game_files') else 134
+        return [f"game_{i}" for i in range(n_games)]
 
     def get_task_types(self) -> list[str]:
         """ALFWorld has 6 task types."""

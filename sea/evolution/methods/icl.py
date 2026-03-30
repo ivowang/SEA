@@ -64,12 +64,16 @@ class ICLEvolver(Evolver):
         reflections_added = 0
         exemplars_added = 0
 
+        # Use the target's Evolvable interface to add entries
+        # (respects evolution contract instead of bypassing via agent.memory)
+        new_entries: list[MemoryEntry] = []
+
         # 1. Generate reflections on failed trajectories
         failed = [t for t in trajectories if not t.success]
         for traj in failed[: self._max_reflections]:
             reflection = self._generate_reflection(agent, traj)
             if reflection:
-                agent.memory.add(MemoryEntry(
+                new_entries.append(MemoryEntry(
                     content=reflection,
                     memory_type="reflection",
                     metadata={
@@ -84,7 +88,7 @@ class ICLEvolver(Evolver):
         successful = [t for t in trajectories if t.success]
         for traj in self._select_exemplars(successful):
             exemplar = self._trajectory_to_exemplar(traj)
-            agent.memory.add(MemoryEntry(
+            new_entries.append(MemoryEntry(
                 content=exemplar,
                 memory_type="semantic",
                 metadata={
@@ -94,6 +98,20 @@ class ICLEvolver(Evolver):
                 },
             ))
             exemplars_added += 1
+
+        # Apply via Evolvable interface: read current state, append, write back
+        if new_entries and hasattr(target, "get_evolvable_state"):
+            try:
+                current = target.get_evolvable_state()
+                updated = list(current) + [e.to_dict() for e in new_entries]
+                target.set_evolvable_state(updated)
+            except Exception:
+                # Fallback: write directly to memory if target doesn't support it
+                for entry in new_entries:
+                    agent.memory.add(entry)
+        else:
+            for entry in new_entries:
+                agent.memory.add(entry)
 
         # 3. Optionally extract skills
         skills_added = 0

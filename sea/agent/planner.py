@@ -163,14 +163,36 @@ class ReActPlanner(Planner):
 
     def plan(self, brain: LLMBrain, context: PlanningContext) -> Action:
         messages = self._build_messages(brain, context)
-        output = brain.generate(messages)
-        response = output.text
 
-        # Store in history
-        self._history.append({"role": "user", "content": context.observation.text})
+        # Build the exact user message for history accuracy
+        user_msg = context.observation.text
+        if context.observation.available_actions:
+            user_msg += "\nAvailable actions: " + ", ".join(context.observation.available_actions)
+
+        # Try generating with retry on parse failure
+        response = ""
+        action = None
+        for attempt in range(self._max_retries + 1):
+            output = brain.generate(messages)
+            response = output.text
+            action = self._parse_action(response)
+
+            # If we got a valid action (not empty text), accept it
+            if action.text.strip():
+                break
+
+            # Parse failed — add correction and retry
+            if attempt < self._max_retries:
+                messages.append({"role": "assistant", "content": response})
+                messages.append({"role": "user", "content":
+                    "Your response was not in the expected format. "
+                    "Please respond with: Thought: <reasoning>\\nAction: <action>"
+                })
+
+        # Store accurate history (the full user message and successful response)
+        self._history.append({"role": "user", "content": user_msg})
         self._history.append({"role": "assistant", "content": response})
 
-        action = self._parse_action(response)
         action.metadata["raw_response"] = response
 
         # Extract thought if present
