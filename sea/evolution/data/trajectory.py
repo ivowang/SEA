@@ -90,33 +90,45 @@ class TrajectoryCollector:
         n: int,
         task_ids: list[str] | None = None,
     ) -> list[Trajectory]:
-        """Collect n trajectories sequentially on envs[0].
+        """Collect n trajectories distributed across all environments.
+
+        Builds (env, task_id) pairs from all environments and cycles through
+        them. Each trajectory records which environment it came from in
+        metadata["env_name"].
 
         For parallel collection, use collect_subprocess() instead.
         """
         if not envs:
             raise ValueError("At least one environment required")
 
-        env = envs[0]
-        if task_ids is None:
-            all_tasks = list(env.get_task_ids())
-            random.shuffle(all_tasks)
+        # Build (env, task_id) pairs
+        pairs: list[tuple[SEAEnv, str]] = []
+        if task_ids is not None:
+            # Explicit task_ids: distribute round-robin across envs
+            for i, tid in enumerate(task_ids):
+                pairs.append((envs[i % len(envs)], tid))
         else:
-            all_tasks = list(task_ids)
+            # Auto-discover from each env
+            for env in envs:
+                env_tasks = list(env.get_task_ids())
+                for tid in env_tasks:
+                    pairs.append((env, tid))
 
-        if not all_tasks:
-            raise ValueError("No task IDs available")
+        if not pairs:
+            raise ValueError("No (env, task_id) pairs available")
 
-        assigned = [all_tasks[i % len(all_tasks)] for i in range(n)]
+        random.shuffle(pairs)
+        assigned = [pairs[i % len(pairs)] for i in range(n)]
         trajectories: list[Trajectory] = []
 
-        for task_id in assigned:
+        for env, task_id in assigned:
             try:
                 traj = agent.run_episode(env, task_id=task_id)
+                traj.metadata["env_name"] = env.name
                 trajectories.append(traj)
                 self.buffer.add(traj)
             except Exception as e:
-                logger.error("Failed to collect trajectory: %s", e)
+                logger.error("Failed on (env=%s, task=%s): %s", env.name, task_id, e)
 
         self._log_summary(trajectories)
         return trajectories

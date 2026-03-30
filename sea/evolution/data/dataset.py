@@ -141,6 +141,101 @@ def trajectories_to_preference_pairs(
     return pairs
 
 
+def compute_returns(rewards: list[float], gamma: float = 0.99) -> list[float]:
+    """Compute discounted cumulative returns G_t for each step.
+
+    G_t = r_t + gamma * r_{t+1} + gamma^2 * r_{t+2} + ...
+    """
+    returns: list[float] = []
+    G = 0.0
+    for r in reversed(rewards):
+        G = r + gamma * G
+        returns.insert(0, G)
+    return returns
+
+
+def trajectories_to_reinforce_data(
+    trajectories: list[Trajectory],
+    system_prompt: str = "",
+    gamma: float = 0.99,
+) -> list[dict[str, Any]]:
+    """Convert trajectories to REINFORCE training records.
+
+    For each step in each trajectory, produces:
+    - context_messages: conversation history up to the observation at this step
+    - action_text: the agent's response (raw ReAct format)
+    - advantage: normalized return (G_t - mean) / std
+
+    Returns:
+        List of dicts with context_messages, action_text, advantage, return keys.
+    """
+    all_records: list[dict[str, Any]] = []
+    all_returns: list[float] = []
+
+    # First pass: compute returns and build records
+    for traj in trajectories:
+        if not traj.steps:
+            continue
+
+        step_rewards = [s.reward for s in traj.steps]
+        returns = compute_returns(step_rewards, gamma)
+        all_returns.extend(returns)
+
+        # Build system message
+        full_system = system_prompt
+        if full_system and "Thought" not in full_system and "Action" not in full_system:
+            full_system = f"{full_system}\n\n{REACT_INSTRUCTIONS}"
+        elif not full_system:
+            full_system = REACT_INSTRUCTIONS
+
+        messages: list[dict[str, str]] = [{"role": "system", "content": full_system}]
+
+        for step, G_t in zip(traj.steps, returns):
+            # User message: observation
+            messages.append({"role": "user", "content": step.observation.text})
+
+            # Action text (raw ReAct format)
+            raw = step.action.metadata.get("raw_response", "")
+            if raw:
+                action_text = raw
+            else:
+                action_text = step.action.text
+                thought = step.action.metadata.get("thought", "")
+                if thought:
+                    action_text = f"Thought: {thought}\nAction: {action_text}"
+
+            all_records.append({
+                "context_messages": list(messages),  # snapshot
+                "action_text": action_text,
+                "return": G_t,
+                "task_id": traj.task_id,
+            })
+
+            # Add assistant turn to history for next step's context
+            messages.append({"role": "assistant", "content": action_text})
+
+            # Add environment response for next step (if available)
+            if step.next_observation is not None:
+                messages.append({"role": "user", "content": step.next_observation.text})
+
+    # Second pass: normalize returns to advantages
+    if all_returns:
+        mean_ret = sum(all_returns) / len(all_returns)
+        var = sum((r - mean_ret) ** 2 for r in all_returns) / len(all_returns)
+        std_ret = var ** 0.5
+        for record in all_records:
+            record["advantage"] = (record["return"] - mean_ret) / max(std_ret, 1e-8)
+    else:
+        for record in all_records:
+            record["advantage"] = 0.0
+
+    logger.info(
+        "Converted %d trajectories to %d REINFORCE records",
+        len(trajectories), len(all_records),
+    )
+    return all_records
+
+
 def to_hf_dataset(data: list[dict[str, Any]]):
     """Convert a list of dicts to a HuggingFace Dataset."""
     from datasets import Dataset

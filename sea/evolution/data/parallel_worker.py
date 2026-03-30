@@ -45,6 +45,8 @@ def main():
                         help="Only collect episodes of this task type")
     parser.add_argument("--only-successful", action="store_true",
                         help="Only save successful trajectories")
+    parser.add_argument("--task-id", default=None,
+                        help="Specific task_id to use for every episode reset")
     args = parser.parse_args()
 
     env_kwargs = json.loads(args.env_kwargs)
@@ -68,7 +70,7 @@ def main():
     from sea.llm.api_backend import APIBackend
     from sea.agent.agent import SEAAgent
     from sea.agent.brain import LLMBrain
-    from sea.agent.memory.episodic import EpisodicMemory
+    from sea.agent.memory.working import WorkingMemory
     from sea.agent.planner import ReActPlanner
 
     backend = APIBackend(**backend_kwargs)
@@ -79,7 +81,7 @@ def main():
             default_max_tokens=args.max_tokens,
             default_temperature=args.temperature,
         ),
-        memory=EpisodicMemory(max_size=20),
+        memory=WorkingMemory(max_size=20),
         planner=ReActPlanner(),
     )
 
@@ -87,7 +89,7 @@ def main():
     output_path = Path(args.output)
     for i in range(args.max_episodes):
         try:
-            traj = agent.run_episode(env)
+            traj = agent.run_episode(env, task_id=args.task_id)
 
             # Skip unsuccessful if only_successful is set
             if args.only_successful and not traj.success:

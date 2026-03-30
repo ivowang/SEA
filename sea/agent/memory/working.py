@@ -1,23 +1,32 @@
-"""Working memory: a sliding window over recent interaction steps."""
+"""Working memory: a sliding window over recent interaction steps.
+
+This memory is Evolvable — ICL/ExpeL evolvers can add reflections and exemplars.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from sea.agent.memory.base import Memory, MemoryEntry
+from sea.core.base import Evolvable
 from sea.core.registry import MEMORY_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 
 @MEMORY_REGISTRY.register("working")
-class WorkingMemory(Memory):
+class WorkingMemory(Memory, Evolvable[list[dict[str, Any]]]):
     """Fixed-size sliding window of recent entries.
 
     This is the simplest memory — it just keeps the last *max_size* entries
-    in insertion order.  Retrieval returns entries by recency, ignoring the
-    query.  Used as the agent's short-term context buffer.
+    in insertion order.  Retrieval returns entries by recency and keyword
+    relevance.  Used as the agent's default memory.
+
+    Implements Evolvable so ICL/ExpeL evolvers can add/modify memory contents.
     """
 
     def __init__(self, max_size: int = 20) -> None:
@@ -72,3 +81,21 @@ class WorkingMemory(Memory):
 
     def state_dict(self) -> dict[str, Any]:
         return {"entries": [e.to_dict() for e in self._buffer], "max_size": self._max_size}
+
+    # -- Evolvable --
+
+    def get_evolvable_state(self) -> list[dict[str, Any]]:
+        return [e.to_dict() for e in self._buffer]
+
+    def set_evolvable_state(self, state: list[dict[str, Any]]) -> None:
+        self._buffer.clear()
+        for d in state:
+            self._buffer.append(MemoryEntry(**d))
+        logger.info("Updated working memory: %d entries", len(self._buffer))
+
+    def evolution_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "working_memory",
+            "num_entries": len(self._buffer),
+            "max_size": self._max_size,
+        }

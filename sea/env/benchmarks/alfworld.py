@@ -12,12 +12,16 @@ Real API verified against alfworld source (github.com/alfworld/alfworld):
 - Config from YAML, env type from config['env']['type'] (typically 'AlfredTWEnv')
 - info dict contains 'admissible_commands': List[List[str]]
 - Reward: 0 or 1, done=True on task completion
+
+Per-game selection: swap gamefiles + num_games on the batch env, then reset.
+This uses ALFWorld's own observation cleaning (unlike raw TextWorld).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from sea.core.registry import ENV_REGISTRY
@@ -26,13 +30,23 @@ from sea.env.base import SEAEnv
 
 logger = logging.getLogger(__name__)
 
+# Task type mapping from game file directory name prefix
+_TASK_TYPE_PREFIXES = [
+    ("pick_and_place_simple", "pick"),
+    ("pick_clean_then_place", "clean"),
+    ("pick_heat_then_place", "heat"),
+    ("pick_cool_then_place", "cool"),
+    ("look_at_obj_in_light", "examine"),
+    ("pick_two_obj", "pick_two"),
+]
+
 
 @ENV_REGISTRY.register("alfworld")
 class ALFWorldEnv(SEAEnv):
     """ALFWorld benchmark adapter.
 
     Wraps the ALFWorld TextWorld environment (batch_size=1) into SEAEnv.
-    Returns single observations (unwrapped from lists).
+    Supports per-game task_id selection via gamefiles swap.
     """
 
     def __init__(
@@ -49,6 +63,10 @@ class ALFWorldEnv(SEAEnv):
         self._env = None
         self._step_count = 0
         self._game_count = 0
+        # Game indexing (populated in _ensure_env)
+        self._all_gamefiles: list[str] = []
+        self._game_index: dict[str, str] = {}       # task_id → game_file
+        self._game_type_index: dict[str, str] = {}   # task_id → task_type
 
     def _ensure_env(self) -> None:
         if self._env is not None:
@@ -66,13 +84,11 @@ class ALFWorldEnv(SEAEnv):
         # Load config from provided path or default SEA config
         config_path = self._config_path
         if not config_path:
-            import os
             config_path = os.path.join(
                 os.path.dirname(__file__), "..", "..", "..", "configs", "envs", "alfworld_base.yaml"
             )
 
         # Set ALFWORLD_DATA if not set
-        import os
         if "ALFWORLD_DATA" not in os.environ:
             alfworld_cache = os.path.expanduser("~/.cache/alfworld")
             if os.path.exists(alfworld_cache):
@@ -95,6 +111,19 @@ class ALFWorldEnv(SEAEnv):
         self._env = self._env.init_env(batch_size=1)
         logger.info("ALFWorld loaded (split=%s, type=%s)", self._split, env_type)
 
+        # Build game index from gamefiles
+        self._all_gamefiles = list(self._env.gamefiles)
+        for gf in self._all_gamefiles:
+            tid = self._game_file_to_task_id(gf)
+            self._game_index[tid] = gf
+            self._game_type_index[tid] = self._extract_task_type_from_path(gf)
+
+        logger.info(
+            "Indexed %d games (%d unique task types)",
+            len(self._game_index),
+            len(set(self._game_type_index.values())),
+        )
+
     @property
     def name(self) -> str:
         return "alfworld"
@@ -103,29 +132,39 @@ class ALFWorldEnv(SEAEnv):
     def max_steps(self) -> int:
         return self._max_steps_val
 
-    def get_task_ids(self) -> list[str]:
-        """ALFWorld does NOT support task_id-based selection.
+    @staticmethod
+    def _game_file_to_task_id(game_file: str) -> str:
+        """Extract a stable, human-readable task_id from game file path.
 
-        The env cycles through its game pool sequentially on reset().
-        Returns placeholder IDs for API compatibility, but reset(task_id=...)
-        does NOT select a specific game. Use task_type_filter for targeted
-        collection instead.
+        Game file structure:
+            .../json_2.1.1/train/{task_dir}/{trial_dir}/game.tw-pddl
+
+        Uses "{task_dir}/{trial_dir}" as the task_id for uniqueness
+        (multiple trials per task).
         """
-        # Return ordinal placeholders — these are NOT selectable
-        return [f"alfworld_{i}" for i in range(self._num_eval_games)]
+        parts = Path(game_file).parts
+        # game.tw-pddl is at index -1, trial at -2, task at -3
+        if len(parts) >= 3:
+            return f"{parts[-3]}/{parts[-2]}"
+        return os.path.basename(game_file)
 
-    @property
-    def _num_eval_games(self) -> int:
-        self._ensure_env()
-        return len(getattr(self._env, "game_files", [])) or 134
+    @staticmethod
+    def _extract_task_type_from_path(game_file: str) -> str:
+        """Extract task type from game file directory name prefix.
 
-    def get_task_types(self) -> list[str]:
-        """ALFWorld has 6 task types."""
-        return ["pick", "clean", "heat", "cool", "examine", "pick_two"]
+        More reliable than observation text heuristic.
+        """
+        # Get the task directory name (grandparent of game.tw-pddl)
+        task_dir = Path(game_file).parts[-3] if len(Path(game_file).parts) >= 3 else ""
+        task_dir_lower = task_dir.lower()
+        for prefix, task_type in _TASK_TYPE_PREFIXES:
+            if task_dir_lower.startswith(prefix):
+                return task_type
+        return "unknown"
 
     @staticmethod
     def _extract_task_type(obs_text: str) -> str:
-        """Extract task type from ALFWorld observation text."""
+        """Extract task type from ALFWorld observation text (fallback)."""
         obs_lower = obs_text.lower()
         if "put a clean" in obs_lower:
             return "clean"
@@ -141,33 +180,69 @@ class ALFWorldEnv(SEAEnv):
             return "pick"
         return "unknown"
 
+    def get_task_ids(self) -> list[str]:
+        """Return real, selectable task IDs derived from game file paths."""
+        self._ensure_env()
+        task_ids = list(self._game_index.keys())
+        if self._task_type_filter:
+            task_ids = [
+                tid for tid in task_ids
+                if self._game_type_index.get(tid) == self._task_type_filter
+            ]
+        return task_ids
+
+    def get_task_types(self) -> list[str]:
+        """ALFWorld has 6 task types."""
+        return ["pick", "clean", "heat", "cool", "examine", "pick_two"]
+
     def reset(
         self, *, seed: int | None = None, task_id: str | None = None,
     ) -> tuple[Observation, dict[str, Any]]:
-        """Reset to next game in ALFWorld's sequential pool.
+        """Reset to a specific game or next in sequential pool.
 
-        NOTE: task_id is NOT used to select a specific game. ALFWorld
-        cycles through its game pool deterministically. Use task_type_filter
-        in the constructor for type-targeted collection.
+        Args:
+            seed: Unused (ALFWorld games are deterministic).
+            task_id: If provided and valid, selects that specific game.
+                     If None, cycles through the game pool sequentially.
         """
         self._ensure_env()
         self._step_count = 0
         self._game_count += 1
 
-        # If task_type_filter is set, keep resetting until we get the target type.
-        # ALFWorld cycles through its game pool, so we skip non-matching games.
-        max_skips = 500  # safety limit
-        for _ in range(max_skips):
+        if task_id and task_id in self._game_index:
+            # Per-game selection: swap gamefiles to target, then reset
+            game_file = self._game_index[task_id]
+            self._env.gamefiles = [game_file]
+            self._env.num_games = 1
             obs, infos = self._env.reset()
+            # Restore full gamefiles list after reset
+            self._env.gamefiles = self._all_gamefiles
+            self._env.num_games = len(self._all_gamefiles)
+
             obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
-            task_type = self._extract_task_type(obs_text)
-            if self._task_type_filter is None or task_type == self._task_type_filter:
-                break
+            task_type = self._game_type_index.get(task_id, self._extract_task_type(obs_text))
         else:
-            raise RuntimeError(
-                f"Could not find task type '{self._task_type_filter}' after {max_skips} resets. "
-                f"This task type may not exist in the '{self._split}' split."
-            )
+            # Sequential cycling (original behavior)
+            # If task_type_filter is set, keep resetting until match
+            max_skips = 500
+            for _ in range(max_skips):
+                # Restore full gamefiles for sequential cycling
+                self._env.gamefiles = self._all_gamefiles
+                self._env.num_games = len(self._all_gamefiles)
+                obs, infos = self._env.reset()
+                obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
+                task_type = self._extract_task_type(obs_text)
+                if self._task_type_filter is None or task_type == self._task_type_filter:
+                    break
+            else:
+                raise RuntimeError(
+                    f"Could not find task type '{self._task_type_filter}' after {max_skips} resets. "
+                    f"This task type may not exist in the '{self._split}' split."
+                )
+
+            # Generate a task_id from the current game for tracking
+            if not task_id:
+                task_id = f"game_{self._game_count}"
 
         # Extract admissible commands
         admissible = None
@@ -177,7 +252,7 @@ class ALFWorldEnv(SEAEnv):
                 admissible = cmds[0] if isinstance(cmds[0], list) else cmds
 
         info: dict[str, Any] = {
-            "task_id": task_id or f"game_{self._game_count}",
+            "task_id": task_id,
             "task_description": obs_text,
             "task_type": task_type,
         }

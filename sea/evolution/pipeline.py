@@ -39,8 +39,8 @@ class EvolutionPipeline:
 
     Orchestrates: collect trajectories → evolve targets → evaluate → repeat.
 
-    NOTE: Collection uses only envs[0]. For multi-env experiments, use
-    separate pipelines or collect_subprocess() with per-env workers.
+    Collection distributes episodes across all provided environments,
+    maintaining (env, task_id) pairing.
     """
 
     def __init__(
