@@ -177,8 +177,10 @@ class ReActPlanner(Planner):
             response = output.text
             action = self._parse_action(response)
 
-            # If we got a valid action (not empty text), accept it
-            if action.text.strip():
+            # Accept if: explicit Action: line found, or tool_call/finish detected
+            has_action_line = bool(re.search(r"Action:\s*\S", response))
+            is_special = action.action_type in ("tool_call", "finish")
+            if (has_action_line or is_special) and action.text.strip():
                 break
 
             # Parse failed — add correction and retry

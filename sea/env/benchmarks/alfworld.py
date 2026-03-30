@@ -104,16 +104,20 @@ class ALFWorldEnv(SEAEnv):
         return self._max_steps_val
 
     def get_task_ids(self) -> list[str]:
-        """ALFWorld cycles through its game pool sequentially on reset().
+        """ALFWorld does NOT support task_id-based selection.
 
-        Task IDs are ordinal indices, NOT stable game identifiers. The same
-        index may map to different games across env instances. Use
-        task_type_filter for targeted collection instead of task_id selection.
+        The env cycles through its game pool sequentially on reset().
+        Returns placeholder IDs for API compatibility, but reset(task_id=...)
+        does NOT select a specific game. Use task_type_filter for targeted
+        collection instead.
         """
+        # Return ordinal placeholders — these are NOT selectable
+        return [f"alfworld_{i}" for i in range(self._num_eval_games)]
+
+    @property
+    def _num_eval_games(self) -> int:
         self._ensure_env()
-        # Return actual count from loaded game files
-        n_games = len(getattr(self._env, 'game_files', [])) if hasattr(self._env, 'game_files') else 134
-        return [f"game_{i}" for i in range(n_games)]
+        return len(getattr(self._env, "game_files", [])) or 134
 
     def get_task_types(self) -> list[str]:
         """ALFWorld has 6 task types."""
@@ -140,6 +144,12 @@ class ALFWorldEnv(SEAEnv):
     def reset(
         self, *, seed: int | None = None, task_id: str | None = None,
     ) -> tuple[Observation, dict[str, Any]]:
+        """Reset to next game in ALFWorld's sequential pool.
+
+        NOTE: task_id is NOT used to select a specific game. ALFWorld
+        cycles through its game pool deterministically. Use task_type_filter
+        in the constructor for type-targeted collection.
+        """
         self._ensure_env()
         self._step_count = 0
         self._game_count += 1
