@@ -114,27 +114,21 @@ def trajectories_to_preference_pairs(
 
         for g in good:
             for b in bad:
-                # Per-step pairs at matching positions
-                min_len = min(len(g.steps), len(b.steps))
-                for i in range(max(min_len, 1)):
-                    if i < len(g.steps) and i < len(b.steps):
-                        prompt = g.steps[i].observation.text
-                        chosen = step_to_response(g.steps[i])
-                        rejected = step_to_response(b.steps[i])
-                    elif i < len(g.steps):
-                        prompt = g.steps[i].observation.text
-                        chosen = step_to_response(g.steps[i])
-                        rejected = "Action: give up"
-                    else:
-                        break
-
-                    if chosen != rejected:
-                        pairs.append({
-                            "prompt": prompt,
-                            "chosen": chosen,
-                            "rejected": rejected,
-                            "task_id": task_id,
-                        })
+                # Only pair steps that share the SAME observation text.
+                # Once trajectories diverge, later steps are incomparable.
+                for gi, gs in enumerate(g.steps):
+                    for bi, bs in enumerate(b.steps):
+                        if gs.observation.text == bs.observation.text:
+                            chosen = step_to_response(gs)
+                            rejected = step_to_response(bs)
+                            if chosen != rejected:
+                                pairs.append({
+                                    "prompt": gs.observation.text,
+                                    "chosen": chosen,
+                                    "rejected": rejected,
+                                    "task_id": task_id,
+                                })
+                            break  # only first match per good step
 
     logger.info("Created %d preference pairs from %d tasks", len(pairs), len(by_task))
     return pairs

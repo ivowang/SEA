@@ -253,7 +253,8 @@ class TrajectoryCollector:
                 Step(
                     observation=Observation(text=s.get("observation", "")),
                     action=Action(text=s.get("action", ""),
-                                  action_type=s.get("action_type", "text")),
+                                  action_type=s.get("action_type", "text"),
+                                  metadata=s.get("action_metadata", {})),
                     next_observation=(
                         Observation(text=s["next_observation"])
                         if s.get("next_observation") else None

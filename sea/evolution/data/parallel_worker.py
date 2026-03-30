@@ -105,6 +105,10 @@ def main():
                         "observation": s.observation.text[:500],
                         "action": s.action.text,
                         "action_type": s.action.action_type,
+                        "action_metadata": {
+                            k: (str(v)[:300] if not isinstance(v, (str, int, float, bool, list)) else v)
+                            for k, v in s.action.metadata.items()
+                        },
                         "next_observation": s.next_observation.text[:500] if s.next_observation else "",
                         "reward": s.reward,
                         "done": s.done,
