@@ -38,7 +38,9 @@ class EvolutionPipeline:
     """The main evolution loop.
 
     Orchestrates: collect trajectories → evolve targets → evaluate → repeat.
-    Supports multiple evolvers running on multiple targets simultaneously.
+
+    NOTE: Collection uses only envs[0]. For multi-env experiments, use
+    separate pipelines or collect_subprocess() with per-env workers.
     """
 
     def __init__(

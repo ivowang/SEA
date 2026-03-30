@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 class SFTEvolver(Evolver):
     """Supervised fine-tuning on successful trajectories.
 
-    Works with LoRATarget: produces a new LoRA checkpoint.
-    Also works with PromptTarget: collects best prompts from trajectories.
+    Requires a LoRATarget (Evolvable[Path]) as the evolution target.
+    Use run_evolution.py or EvolutionPipeline with extra_targets to wire
+    a LoRATarget instead of passing LLMBrain directly.
     """
 
     def __init__(

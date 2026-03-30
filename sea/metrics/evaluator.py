@@ -74,13 +74,18 @@ class Evaluator:
                 env_trajs: list[Trajectory] = []
                 available_tasks = task_ids or env.get_task_ids()
 
-                # Fixed seed ensures same tasks are evaluated every iteration
-                rng = random.Random(self._eval_seed)
-                n_episodes = min(self._num_episodes, max(len(available_tasks), 1))
+                # Determine number of eval episodes
+                n_episodes = self._num_episodes
                 if available_tasks:
+                    n_episodes = min(n_episodes, len(available_tasks))
+
+                # Fixed seed for reproducible task selection
+                rng = random.Random(self._eval_seed)
+                if available_tasks and n_episodes <= len(available_tasks):
                     selected = rng.sample(available_tasks, n_episodes)
                 else:
-                    selected = [None] * n_episodes  # ALFWorld: no stable task IDs
+                    # Sequential env (ALFWorld) or no task IDs — just run N episodes
+                    selected = [None] * n_episodes
 
                 for task_id in selected:
                     try:
