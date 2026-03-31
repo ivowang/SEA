@@ -144,26 +144,25 @@ class TrajectoryCollector:
     ) -> list[Trajectory]:
         """Collect n trajectories with high concurrency using thread pool.
 
-        Each worker thread gets its own agent + env instance (created via
-        factory functions) to avoid shared mutable state. The API backend
-        is thread-safe, so all workers share the underlying HTTP connection pool.
+        Each worker is a long-running loop that creates its own agent + env
+        and runs episodes until the global target is met. The main thread
+        monitors the count of valid (and optionally successful) trajectories
+        in real time and signals workers to stop once n is reached.
 
-        This is ideal for API-based collection where the bottleneck is
-        network latency, not CPU/GPU.
+        No pre-allocated oversample — workers run on demand until the
+        exact target count is satisfied.
 
         Args:
             agent_factory: Callable that returns a fresh SEAAgent instance.
-                Each worker calls this once to get its own agent.
             env_factory: Callable that returns a fresh SEAEnv instance.
-                Each worker calls this once to get its own environment.
-            n: Number of trajectories to collect.
-            max_workers: Maximum concurrent threads.
+            n: Target number of valid trajectories.
+            max_workers: Maximum concurrent worker threads.
             task_ids: Optional list of task IDs to cycle through.
-            only_successful: If True, only return successful trajectories
-                (will collect more than n to meet the target).
+            only_successful: If True, only count successful trajectories
+                toward the target (failures are discarded).
 
         Returns:
-            List of Trajectory objects.
+            List of Trajectory objects (exactly n, or fewer if all workers exit).
 
         Example:
             trajectories = TrajectoryCollector.collect_parallel(
@@ -171,80 +170,80 @@ class TrajectoryCollector:
                 env_factory=lambda: TextCraftEnv(max_steps_val=15),
                 n=100,
                 max_workers=30,
+                only_successful=True,
             )
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import threading
 
         results: list[Trajectory] = []
-        results_lock = threading.Lock()
-        completed = threading.Event()
+        lock = threading.Lock()
+        stop = threading.Event()
+        stats = {"attempted": 0, "valid": 0}
 
-        # Determine task assignments
-        if task_ids:
-            assignments = [task_ids[i % len(task_ids)] for i in range(n)]
-        else:
-            assignments = [None] * n
+        # Build task_id iterator per worker
+        _task_ids = task_ids or [None]
 
-        # If only_successful, we may need to oversample
-        target = n
-        if only_successful:
-            assignments = [None] * (n * 3)  # initial oversample 3x
-
-        def _run_one(idx: int, task_id: str | None) -> Trajectory | None:
-            """Run one episode in its own agent+env."""
-            if completed.is_set():
-                return None
+        def _worker(worker_id: int) -> None:
+            """Long-running worker: creates own agent+env, loops until stop."""
+            agent = agent_factory()
+            env = env_factory()
+            episode = 0
             try:
-                agent = agent_factory()
-                env = env_factory()
-                try:
-                    traj = agent.run_episode(env, task_id=task_id)
-                    traj.metadata["env_name"] = env.name
-                    traj.metadata["worker_idx"] = idx
-                    return traj
-                finally:
-                    env.close()
-            except Exception as e:
-                logger.error("Worker %d failed: %s", idx, e)
-                return None
+                while not stop.is_set():
+                    tid = _task_ids[episode % len(_task_ids)]
+                    episode += 1
+                    try:
+                        traj = agent.run_episode(env, task_id=tid)
+                        traj.metadata["env_name"] = env.name
+                        traj.metadata["worker_id"] = worker_id
+                    except Exception as e:
+                        logger.debug("Worker %d episode failed: %s", worker_id, e)
+                        continue
 
+                    with lock:
+                        stats["attempted"] += 1
+                        if only_successful and not traj.success:
+                            continue
+                        results.append(traj)
+                        stats["valid"] = len(results)
+                        count = stats["valid"]
+
+                    if count % 10 == 0:
+                        logger.info(
+                            "  Progress: %d/%d valid (%d attempted)",
+                            count, n, stats["attempted"],
+                        )
+                    if count >= n:
+                        stop.set()
+                        return
+            finally:
+                try:
+                    env.close()
+                except Exception:
+                    pass
+
+        actual_workers = min(max_workers, n)
         logger.info(
             "Starting parallel collection: target=%d, workers=%d, only_successful=%s",
-            target, min(max_workers, len(assignments)), only_successful,
+            n, actual_workers, only_successful,
         )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_run_one, i, tid): i
-                for i, tid in enumerate(assignments)
-            }
+        threads = []
+        for i in range(actual_workers):
+            t = threading.Thread(target=_worker, args=(i,), daemon=True)
+            t.start()
+            threads.append(t)
 
-            for future in as_completed(futures):
-                traj = future.result()
-                if traj is None:
-                    continue
+        # Wait for all workers to finish (they stop when target is met)
+        for t in threads:
+            t.join()
 
-                if only_successful and not traj.success:
-                    continue
-
-                with results_lock:
-                    results.append(traj)
-                    count = len(results)
-
-                if count % 10 == 0 or count == target:
-                    logger.info("  Progress: %d/%d trajectories collected", count, target)
-
-                if count >= target:
-                    completed.set()
-                    break
-
-        success_count = sum(1 for t in results if t.success)
         logger.info(
-            "Parallel collection done: %d trajectories (%.1f%% success)",
-            len(results), 100 * success_count / max(len(results), 1),
+            "Parallel collection done: %d valid trajectories (%d attempted, %.1f%% yield)",
+            len(results), stats["attempted"],
+            100 * len(results) / max(stats["attempted"], 1),
         )
-        return results[:target]
+        return results[:n]
 
     @staticmethod
     def collect_subprocess(
