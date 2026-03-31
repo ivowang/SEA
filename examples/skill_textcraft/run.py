@@ -49,7 +49,7 @@ NUM_ITERATIONS = 5
 COLLECT_PER_ITER = 30
 EVAL_EPISODES = 20
 NUM_TASKS = 50
-MAX_STEPS = 15
+MAX_STEPS = 30
 SKILLS_DIR = Path("outputs/tutorial_skills/skills")
 
 env_json = Path(__file__).resolve().parent.parent.parent / "env.json"
@@ -168,10 +168,15 @@ def build_agent() -> SEAAgent:
     brain = LLMBrain(
         backend=backend,
         system_prompt=(
-            "You are a Minecraft crafting agent. Follow recipes step by step.\n"
-            "First check what you have, then gather materials, then craft.\n"
-            "Use exact item names from the available actions.\n"
-            "If a relevant skill is available, follow its steps."
+            "You are a TextCraft crafting agent. You solve crafting goals one step at a time.\n\n"
+            "RULES:\n"
+            "- The observation shows available crafting recipes and your goal\n"
+            "- Execute ONE command per turn\n"
+            "- Commands: 'get <count> <item>' for base materials, 'craft <recipe>' following the exact recipe shown\n"
+            "- Work bottom-up: get base materials first, craft intermediate items, then the final goal\n"
+            "- Copy recipes EXACTLY as shown (including counts). Do not modify the recipe.\n"
+            "- NEVER use finish(). The environment ends when the goal is crafted.\n"
+            "- If a relevant skill is available, follow its steps."
         ),
         default_max_tokens=150,
         default_temperature=0.0,

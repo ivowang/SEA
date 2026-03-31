@@ -52,7 +52,7 @@ NUM_COLLECT = 50       # API trajectories for training data
 NUM_SFT_ITERS = 3     # SFT training iterations
 EVAL_EPISODES = 20
 NUM_TASKS = 50
-MAX_STEPS = 15
+MAX_STEPS = 30
 OUTPUT_DIR = Path("outputs/tutorial_sft")
 
 env_json = Path(__file__).resolve().parent.parent.parent / "env.json"
@@ -63,9 +63,17 @@ BASE_URL = creds["baseUrl"] + "/v1"
 API_MODEL = "openai/gpt-5.4-nano"
 
 SYSTEM_PROMPT = (
-    "You are a Minecraft crafting agent. Follow recipes step by step.\n"
-    "First check what you have, then gather materials, then craft.\n"
-    "Use exact item names from the available actions."
+    "You are a TextCraft crafting agent. You solve crafting goals one step at a time.\n\n"
+    "RULES:\n"
+    "- The observation shows available crafting recipes and your goal\n"
+    "- Execute ONE command per turn\n"
+    "- Commands: 'get <count> <item>' for base materials, 'craft <recipe>' following the exact recipe shown\n"
+    "- Work bottom-up: get base materials first, craft intermediate items, then the final goal\n"
+    "- Copy recipes EXACTLY as shown (including counts). Do not modify the recipe.\n"
+    "- NEVER use finish(). The environment ends when the goal is crafted.\n\n"
+    "EXAMPLE (goal: craft 4 oak planks):\n"
+    "Thought: The recipe says 'craft 4 oak planks using 1 oak logs'. I need 1 oak logs first.\n"
+    "Action: get 1 oak logs"
 )
 
 
