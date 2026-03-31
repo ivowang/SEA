@@ -71,6 +71,10 @@ def parse_skill_md(text: str) -> SkillMd:
 
     Raises ValueError if the frontmatter is missing or invalid.
     """
+    # Normalize BOM and line endings
+    text = text.lstrip("\ufeff")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
     m = _FRONTMATTER_RE.match(text)
     if not m:
         raise ValueError("SKILL.md must start with YAML frontmatter (--- ... ---)")
@@ -78,7 +82,10 @@ def parse_skill_md(text: str) -> SkillMd:
     raw_yaml = m.group(1)
     body = text[m.end():]
 
-    data = yaml.safe_load(raw_yaml)
+    try:
+        data = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in frontmatter: {e}") from e
     if not isinstance(data, dict):
         raise ValueError(f"Frontmatter must be a YAML mapping, got {type(data).__name__}")
     if "name" not in data:
@@ -185,23 +192,48 @@ def skill_from_dict(d: dict[str, Any]) -> SkillMd:
 
 
 def skill_to_dict(skill: SkillMd) -> dict[str, Any]:
-    """Convert SkillMd to legacy dict format (for Evolvable contract)."""
+    """Convert SkillMd to legacy dict format (for Evolvable contract).
+
+    Attempts to reconstruct the original skill type fields for backward
+    compatibility with code that expects CodeSkill/TextSkill/ComposedSkill dicts.
+    """
     fm = skill.frontmatter
     d: dict[str, Any] = {
         "name": fm.name,
         "description": fm.description,
         "tags": fm.tags,
-        "type": "SkillMd",
     }
+
+    # Detect and preserve skill type from body structure
     if fm.sub_skills:
+        d["type"] = "ComposedSkill"
         d["sub_skills"] = fm.sub_skills
         d["composition_plan"] = skill.body
-    d["instructions"] = skill.body
+        d["instructions"] = skill.body
+    elif "```python" in skill.body:
+        # Extract source_code from code block
+        d["type"] = "CodeSkill"
+        import re
+        code_match = re.search(r"```python\n(.*?)```", skill.body, re.DOTALL)
+        d["source_code"] = code_match.group(1).strip() if code_match else skill.body
+    else:
+        d["type"] = "TextSkill"
+        d["instructions"] = skill.body
+
     if fm.when_to_use:
         d["when_to_use"] = fm.when_to_use
     return d
 
 
 def _sanitize_filename(name: str) -> str:
-    """Convert a skill name to a safe filename (without extension)."""
-    return re.sub(r"[^a-z0-9_-]", "_", name.lower()).strip("_")
+    """Convert a skill name to a safe filename (without extension).
+
+    Uses a short hash suffix to avoid collisions between similar names.
+    """
+    import hashlib
+    slug = re.sub(r"[^a-z0-9_-]", "_", name.lower()).strip("_")
+    if not slug:
+        slug = "skill"
+    # Add short hash to avoid collisions
+    h = hashlib.md5(name.encode()).hexdigest()[:6]
+    return f"{slug}_{h}"

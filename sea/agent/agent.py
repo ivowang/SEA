@@ -51,6 +51,12 @@ class SEAAgent(Checkpointable):
         self._memory_k = memory_retrieval_k
         self._skill_k = skill_retrieval_k
 
+        # Auto-register ReadSkillTool for progressive disclosure
+        if self.skill_library is not None:
+            from sea.agent.tools.skill_reader import ReadSkillTool
+            if not self.tool_registry.get("read_skill"):
+                self.tool_registry.register(ReadSkillTool(self.skill_library))
+
     def act(self, observation: Observation, task_description: str = "", step: int = 0) -> Action:
         """Single-step action selection.
 

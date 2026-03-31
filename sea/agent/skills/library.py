@@ -299,7 +299,7 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
         self._skills.clear()
         self._embeddings.clear()
 
-        # Try loading from .md files first
+        # Try loading from .md files first, fall back to JSON if no skills loaded
         md_dir = path / "md"
         if md_dir.exists():
             for md_path in sorted(md_dir.glob("*.md")):
@@ -308,7 +308,8 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
                     self._skills[skill.name] = skill
                 except Exception as e:
                     logger.warning("Failed to load skill from %s: %s", md_path, e)
-        elif (path / "skill_library.json").exists():
+
+        if not self._skills and (path / "skill_library.json").exists():
             # Fallback to legacy JSON
             data = json.loads((path / "skill_library.json").read_text())
             for d in data:
@@ -349,7 +350,10 @@ class SkillLibrary(Evolvable[list[dict[str, Any]]]):
             md = skill_from_dict(d)
             self._skills[md.name] = md
 
-        # Write to disk if skills_dir set
+        # Reconcile disk: remove stale files, write new ones
+        if self._skills_dir and self._skills_dir.exists():
+            for old_md in self._skills_dir.glob("*.md"):
+                old_md.unlink()
         if self._skills_dir:
             self._skills_dir.mkdir(parents=True, exist_ok=True)
             for skill in self._skills.values():
