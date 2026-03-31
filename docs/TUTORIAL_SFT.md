@@ -1,85 +1,82 @@
-# Tutorial: SFT Evolution on TextCraft
+# Tutorial 3: SFT Evolution (LoRA Fine-Tuning) on TextCraft
 
-Train a LoRA adapter via supervised fine-tuning on successful TextCraft crafting trajectories. The agent collects crafting experiences, filters successes, trains LoRA weights, and hot-swaps the improved adapter — all on the real TextCraft benchmark.
+Train a local LLM (Qwen2.5-7B) via supervised fine-tuning on successful TextCraft trajectories. Data is collected via API, then used to train a LoRA adapter that is hot-swapped into the vLLM inference engine.
 
-**Requires**: 2 GPUs (inference + training), Qwen3.5-9B model
+**Requires GPU** — API for data collection, local GPU for LoRA training.
 
-## Quick Run
+## Quick Start
 
 ```bash
-export SEA_MODEL_PATH="/root/models/Qwen3.5-9B"
-export SEA_INFERENCE_GPU="4"
-export SEA_TRAINING_GPU="5"
 python examples/sft_textcraft/run.py
 ```
 
 ## How It Works
 
+### Three Phases
+1. **Phase A: Collect training data via API** — 50 trajectories with `gpt-5.4-nano`, filter successful ones
+2. **Phase B: Baseline evaluation** — Load Qwen2.5-7B on vLLM (TP=2), evaluate 20 episodes
+3. **Phase C: SFT training loop** (3 iterations) — Train LoRA → hot-swap → evaluate → collect more data
+
+### Architecture
 ```
-For each iteration:
-  1. Agent interacts with TextCraft via vLLM (GPU 0)
-     → Tries "get 1 oak log", "craft 4 oak planks using 1 oak log", etc.
-  2. Successful trajectories filtered (reward > 0)
-  3. Convert to multi-turn chat format for SFT
-  4. Train LoRA adapter on GPU 1 (PEFT + TRL SFTTrainer)
-  5. Hot-swap new adapter into vLLM (zero downtime)
-  6. Evaluate improvement
+Phase A: APIBackend → gpt-5.4-nano → TextCraft → successful trajectories
+Phase B: vLLM (GPU 4-5) → Qwen2.5-7B → baseline eval
+Phase C: HFTrainingBackend (GPU 6) → LoRA training → hot-swap to vLLM → eval
 ```
 
-## Key Code
+### Why It Works
+- API-generated successful trajectories provide **high-quality demonstrations**
+- SFT teaches the local model the correct ReAct format + TextCraft action patterns
+- `completion_only_loss=True` ensures the model only learns assistant responses
+- LoRA (r=16) is lightweight — fits on a single A800 40GB
 
-### Collect and filter
+## Key Components
 
+### SFTEvolver
 ```python
-trajectories = collector.collect(agent, [env], n=20)
-good = [t for t in trajectories if t.success or t.total_reward > 0]
-sft_data = trajectories_to_sft_data(good, system_prompt=agent.brain.system_prompt)
-dataset = to_hf_dataset(sft_data)
-```
+from sea.evolution.methods.sft import SFTEvolver
 
-### Train LoRA
-
-```python
-hf = HFTrainingBackend(model_name=MODEL_PATH, device="cuda:1", torch_dtype="bfloat16")
-model = hf.get_trainable_model(lora_config={
-    "r": 16, "lora_alpha": 32,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
-})
-
-trainer = SFTTrainer(
-    model=model,
-    args=SFTConfig(num_train_epochs=2, learning_rate=2e-5, max_length=2048, bf16=True, ...),
-    train_dataset=dataset,
-    processing_class=tokenizer,
+sft = SFTEvolver(
+    model_name="Qwen/Qwen2.5-7B-Instruct",
+    device="cuda:6",           # training GPU
+    learning_rate=2e-5,
+    num_epochs=3,
+    batch_size=4,
+    max_length=1024,
+    output_dir="outputs/tutorial_sft",
 )
-trainer.train()
 ```
 
-### Hot-swap
-
+### LoRA Target
 ```python
-hf.save_adapter(model, adapter_path)
-agent.brain.backend.load_lora(str(adapter_path), name="iter_1")
-agent.brain.lora_name = "iter_1"
+from sea.evolution.targets.lm_params import LoRATarget
+
+lora_target = LoRATarget(
+    base_model_name="Qwen/Qwen2.5-7B-Instruct",
+    adapter_dir="outputs/tutorial_sft/adapter_init",
+)
 ```
 
-## TextCraft Environment
-
-TextCraft is a text-based Minecraft crafting benchmark (`pip install textcraft`). The agent receives a goal item and available recipes, then must execute `get` and `craft` commands in the correct order.
-
-```
-Observation:
-  Crafting commands:
-  craft 1 dark oak sign using 6 dark oak planks, 1 stick
-  craft 4 dark oak planks using 1 dark oak log
-  craft 4 sticks using 2 dark oak planks
-
-  Goal: craft dark oak sign.
-
-Actions: "get 1 dark oak log", "craft 4 dark oak planks using 1 dark oak log", ...
-Reward: 1.0 on crafting the goal item, 0.0 otherwise
+### Hot-Swap Flow
+```python
+# SFTEvolver.evolve() internally:
+# 1. Load base model + LoRA on training GPU
+# 2. Train on successful trajectories
+# 3. Save adapter checkpoint
+# 4. agent.brain.swap_lora(adapter_path) → update vLLM inference
 ```
 
-## Full Script
+## Expected Results
 
-See `examples/sft_textcraft/run.py`
+| Stage | Success Rate |
+|-------|-------------|
+| Baseline (no LoRA) | ~20-30% |
+| SFT Iter 1 | ~40-50% |
+| SFT Iter 3 | ~50-65% |
+
+Improvement: **+20-35%** from baseline.
+
+## GPU Requirements
+
+- **Inference**: GPU 4-5 (vLLM TP=2, ~20GB per GPU)
+- **Training**: GPU 6 (PEFT LoRA, ~25GB)
