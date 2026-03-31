@@ -94,15 +94,22 @@ def trajectories_to_preference_pairs(
     Returns:
         List of dicts with "prompt", "chosen", "rejected" keys.
     """
-    # Group trajectories by their initial observation (the actual task/goal),
-    # NOT by task_id (which can be a fabricated per-process counter like "game_1")
-    by_initial_obs: dict[str, list[Trajectory]] = {}
+    # Group trajectories by a stable key: prefer (env_name, task_type, task_description)
+    # to avoid both fabricated task_id issues and initial-text truncation collisions
+    import hashlib
+    by_task_key: dict[str, list[Trajectory]] = {}
     for traj in trajectories:
-        if traj.steps:
-            key = traj.steps[0].observation.text[:200]
+        env_name = traj.metadata.get("env_name", "")
+        task_desc = traj.metadata.get("task_description", "")
+        if task_desc:
+            # Stable key from task description + env
+            key = f"{env_name}:{traj.task_type}:{hashlib.md5(task_desc.encode()).hexdigest()}"
+        elif traj.steps:
+            key = hashlib.md5(traj.steps[0].observation.text.encode()).hexdigest()
         else:
             key = traj.task_id
-        by_initial_obs.setdefault(key, []).append(traj)
+        by_task_key.setdefault(key, []).append(traj)
+    by_initial_obs = by_task_key
 
     pairs = []
     for task_key, task_trajs in by_initial_obs.items():
@@ -146,6 +153,8 @@ def compute_returns(rewards: list[float], gamma: float = 0.99) -> list[float]:
 
     G_t = r_t + gamma * r_{t+1} + gamma^2 * r_{t+2} + ...
     """
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError(f"gamma must be in [0, 1], got {gamma}")
     returns: list[float] = []
     G = 0.0
     for r in reversed(rewards):
@@ -190,9 +199,15 @@ def trajectories_to_reinforce_data(
 
         messages: list[dict[str, str]] = [{"role": "system", "content": full_system}]
 
-        for step, G_t in zip(traj.steps, returns):
-            # User message: observation
-            messages.append({"role": "user", "content": step.observation.text})
+        for i, (step, G_t) in enumerate(zip(traj.steps, returns)):
+            # User message: only append observation for the first step.
+            # For subsequent steps, the observation was already appended as
+            # next_observation from the previous step.
+            if i == 0:
+                messages.append({"role": "user", "content": step.observation.text})
+            elif not messages or messages[-1]["role"] != "user":
+                # Fallback: append if next_observation was missing in previous step
+                messages.append({"role": "user", "content": step.observation.text})
 
             # Action text (raw ReAct format)
             raw = step.action.metadata.get("raw_response", "")

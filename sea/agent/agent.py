@@ -46,8 +46,8 @@ class SEAAgent(Checkpointable):
         self.brain = brain
         self.memory = memory
         self.planner = planner
-        self.skill_library = skill_library or SkillLibrary()
-        self.tool_registry = tool_registry or ToolRegistry()
+        self.skill_library = skill_library if skill_library is not None else SkillLibrary()
+        self.tool_registry = tool_registry if tool_registry is not None else ToolRegistry()
         self._memory_k = memory_retrieval_k
         self._skill_k = skill_retrieval_k
 
@@ -229,7 +229,7 @@ class SEAAgent(Checkpointable):
         path.mkdir(parents=True, exist_ok=True)
         self.brain.save_checkpoint(path / "brain")
         self.memory.save_checkpoint(path / "memory")
-        if self.skill_library:
+        if self.skill_library is not None:
             self.skill_library.save_checkpoint(path / "skills")
         logger.info("Agent checkpoint saved to %s", path)
 
@@ -238,7 +238,7 @@ class SEAAgent(Checkpointable):
             self.brain.load_checkpoint(path / "brain")
         if (path / "memory").exists():
             self.memory.load_checkpoint(path / "memory")
-        if (path / "skills").exists() and self.skill_library:
+        if (path / "skills").exists() and self.skill_library is not None:
             self.skill_library.load_checkpoint(path / "skills")
         logger.info("Agent checkpoint loaded from %s", path)
 

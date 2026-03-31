@@ -126,7 +126,14 @@ class VLLMBackend(LLMBackend):
             top_p=top_p,
             stop=stop or [],
         )
-        lora_request = self._active_loras.get(lora_name) if lora_name else None
+        lora_request = None
+        if lora_name:
+            lora_request = self._active_loras.get(lora_name)
+            if lora_request is None:
+                raise RuntimeError(
+                    f"LoRA adapter '{lora_name}' not loaded. "
+                    f"Available: {list(self._active_loras.keys())}"
+                )
         outputs = self.llm.generate([prompt], params, lora_request=lora_request)
         return self._parse_output(outputs[0])
 
@@ -148,7 +155,14 @@ class VLLMBackend(LLMBackend):
             top_p=top_p,
             stop=stop or [],
         )
-        lora_request = self._active_loras.get(lora_name) if lora_name else None
+        lora_request = None
+        if lora_name:
+            lora_request = self._active_loras.get(lora_name)
+            if lora_request is None:
+                raise RuntimeError(
+                    f"LoRA adapter '{lora_name}' not loaded. "
+                    f"Available: {list(self._active_loras.keys())}"
+                )
         outputs = self.llm.generate(prompts, params, lora_request=lora_request)
         return [self._parse_output(o) for o in outputs]
 

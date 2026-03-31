@@ -45,7 +45,8 @@ class WorkingMemory(Memory, Evolvable[list[dict[str, Any]]]):
 
         query_words = set(re.findall(r"\w+", query.lower()))
         if not query_words:
-            return entries[-k:]
+            # No query: return most recent entries (newest first)
+            return list(reversed(entries[-k:]))
 
         # Score by recency + keyword overlap
         scored = []
@@ -54,9 +55,15 @@ class WorkingMemory(Memory, Evolvable[list[dict[str, Any]]]):
             overlap = len(query_words & content_words)
             recency = i / max(len(entries), 1)  # 0..1, higher = more recent
             score = overlap + recency * 0.5
-            scored.append((score, entry))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [e for _, e in scored[:k]]
+            scored.append((score, overlap, entry))
+
+        # Filter to entries with at least some overlap, fallback to recency
+        relevant = [(s, e) for s, o, e in scored if o > 0]
+        if not relevant:
+            return list(reversed(entries[-k:]))
+
+        relevant.sort(key=lambda x: x[0], reverse=True)
+        return [e for _, e in relevant[:k]]
 
     def get_all(self) -> list[MemoryEntry]:
         return list(self._buffer)

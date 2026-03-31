@@ -207,7 +207,8 @@ class TrajectoryCollector:
                 cmd.extend(["--task-type-filter", task_type_filter])
             if only_successful:
                 cmd.append("--only-successful")
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stderr_file = Path(tmpdir) / f"worker_{i}.stderr"
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=open(stderr_file, "w"))
             procs.append(proc)
 
         logger.info("  %d workers launched", num_workers)
@@ -215,11 +216,17 @@ class TrajectoryCollector:
         def read_jsonl() -> list[dict]:
             records = []
             try:
-                for line in shared_jsonl.read_text().strip().split("\n"):
-                    if line.strip():
-                        records.append(_json.loads(line))
+                text = shared_jsonl.read_text()
             except Exception:
-                pass
+                return records
+            for line in text.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(_json.loads(line))
+                except _json.JSONDecodeError:
+                    pass  # skip corrupt/incomplete line
             return records
 
         def count_by_type(records):

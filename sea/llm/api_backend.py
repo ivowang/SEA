@@ -25,6 +25,8 @@ class APIBackend(LLMBackend):
         model: str = "gpt-4o-mini",
         base_url: str | None = None,
         api_key: str | None = None,
+        timeout: float = 120.0,
+        max_retries: int = 3,
         **kwargs: Any,
     ) -> None:
         try:
@@ -33,7 +35,10 @@ class APIBackend(LLMBackend):
             raise ImportError("openai package required. Install with: pip install openai") from e
 
         self._model_name = model
-        client_kwargs: dict[str, Any] = {}
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
         if base_url:
             client_kwargs["base_url"] = base_url
         if api_key:

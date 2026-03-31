@@ -43,6 +43,12 @@ class EpisodicMemory(Memory, Evolvable[list[dict[str, Any]]]):
             return []
         import re
         query_words = set(re.findall(r"\w+", query.lower()))
+
+        # Empty query: return most recent entries by timestamp
+        if not query_words:
+            sorted_by_time = sorted(self._entries, key=lambda e: e.timestamp, reverse=True)
+            return sorted_by_time[:k]
+
         scored = []
         for entry in self._entries:
             content_words = set(re.findall(r"\w+", entry.content.lower()))

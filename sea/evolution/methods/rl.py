@@ -112,6 +112,15 @@ class RLEvolver(Evolver):
         self._callbacks = trainer_callbacks or []
         self._train_step = 0
 
+        if algorithm == "grpo":
+            import warnings
+            warnings.warn(
+                "algorithm='grpo' is deprecated and now an alias for 'reinforce'. "
+                "GRPO-specific params (num_generations, max_completion_length) are ignored.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
     def requires_trajectories(self) -> bool:
         return True
 
@@ -256,23 +265,26 @@ class RLEvolver(Evolver):
             "Starting REINFORCE training: %d samples, %d epochs",
             len(dataset), self._epochs,
         )
-        trainer.train()
+        try:
+            trainer.train()
 
-        # Save adapter and hot-swap
-        adapter_path = run_dir / "adapter"
-        hf.save_adapter(model, adapter_path)
-        target.set_evolvable_state(adapter_path)
-        agent.brain.swap_lora(str(adapter_path))
+            # Save adapter and hot-swap
+            adapter_path = run_dir / "adapter"
+            hf.save_adapter(model, adapter_path)
+            target.set_evolvable_state(adapter_path)
+            agent.brain.swap_lora(str(adapter_path))
 
-        metrics.log({
-            "rl/algorithm": "reinforce",
-            "rl/num_samples": len(dataset),
-            "rl/train_step": self._train_step,
-            "rl/avg_advantage": sum(r["advantage"] for r in train_data) / len(train_data),
-        })
-
-        del model, trainer
-        torch.cuda.empty_cache()
+            metrics.log({
+                "rl/algorithm": "reinforce",
+                "rl/num_samples": len(dataset),
+                "rl/train_step": self._train_step,
+                "rl/avg_advantage": sum(r["advantage"] for r in train_data) / len(train_data),
+            })
+        finally:
+            del model, trainer
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
 
     def _tokenize_reinforce_data(
         self,
@@ -296,7 +308,7 @@ class RLEvolver(Evolver):
             action_text = record["action_text"]
             advantage = record["advantage"]
 
-            # Tokenize context (prompt) — no generation, just input
+            # Tokenize context (prompt)
             if hasattr(tokenizer, "apply_chat_template"):
                 prompt_text = tokenizer.apply_chat_template(
                     context, tokenize=False, add_generation_prompt=True,
@@ -306,24 +318,23 @@ class RLEvolver(Evolver):
                     f"{m['role']}: {m['content']}" for m in context
                 ) + "\nassistant: "
 
-            # Tokenize prompt + action together
-            full_text = prompt_text + action_text
-            full_tokens = tokenizer(
-                full_text,
-                truncation=True,
-                max_length=self._max_seq_length,
-                return_tensors="pt",
-            )
-            prompt_tokens = tokenizer(
-                prompt_text,
-                truncation=True,
-                max_length=self._max_seq_length,
-                return_tensors="pt",
-            )
+            # Tokenize prompt and completion SEPARATELY then concatenate
+            # to avoid BPE boundary issues
+            prompt_ids = tokenizer(
+                prompt_text, add_special_tokens=True, return_tensors="pt",
+            )["input_ids"].squeeze(0)
+            action_ids = tokenizer(
+                action_text, add_special_tokens=False, return_tensors="pt",
+            )["input_ids"].squeeze(0)
 
-            input_ids = full_tokens["input_ids"].squeeze(0)
-            attention_mask = full_tokens["attention_mask"].squeeze(0)
-            prompt_len = prompt_tokens["input_ids"].shape[1]
+            # Truncate: if prompt alone exceeds max, skip this sample
+            if prompt_ids.shape[0] >= self._max_seq_length:
+                continue
+
+            # Concatenate and truncate total to max_seq_length
+            input_ids = torch.cat([prompt_ids, action_ids])[:self._max_seq_length]
+            attention_mask = torch.ones_like(input_ids)
+            prompt_len = prompt_ids.shape[0]
 
             # Labels: -100 for prompt tokens, real ids for action tokens
             labels = input_ids.clone()
@@ -427,18 +438,21 @@ class RLEvolver(Evolver):
         )
 
         logger.info("Starting DPO training: %d pairs", len(pairs))
-        trainer.train()
+        try:
+            trainer.train()
 
-        adapter_path = run_dir / "adapter"
-        hf.save_adapter(model, adapter_path)
-        target.set_evolvable_state(adapter_path)
-        agent.brain.swap_lora(str(adapter_path))
+            adapter_path = run_dir / "adapter"
+            hf.save_adapter(model, adapter_path)
+            target.set_evolvable_state(adapter_path)
+            agent.brain.swap_lora(str(adapter_path))
 
-        metrics.log({
-            "rl/algorithm": "dpo",
-            "rl/num_pairs": len(pairs),
-            "rl/train_step": self._train_step,
-        })
-
-        del model, trainer
-        torch.cuda.empty_cache()
+            metrics.log({
+                "rl/algorithm": "dpo",
+                "rl/num_pairs": len(pairs),
+                "rl/train_step": self._train_step,
+            })
+        finally:
+            del model, trainer
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()

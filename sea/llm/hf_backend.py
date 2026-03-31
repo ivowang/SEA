@@ -30,6 +30,8 @@ class HFTrainingBackend:
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
     ) -> None:
+        if load_in_4bit and load_in_8bit:
+            raise ValueError("Cannot set both load_in_4bit and load_in_8bit")
         self._model_name = model_name
         self._device = device
         self._torch_dtype = torch_dtype

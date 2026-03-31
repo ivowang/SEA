@@ -145,6 +145,7 @@ class SFTEvolver(Evolver):
             bf16=(self._torch_dtype == "bfloat16"),
             fp16=(self._torch_dtype == "float16"),
             remove_unused_columns=False,
+            completion_only_loss=True,  # only train on assistant responses
         )
 
         # Apply custom model init if provided (e.g., O-LoRA setup)
@@ -164,28 +165,30 @@ class SFTEvolver(Evolver):
         )
 
         logger.info("Starting SFT training: %d samples, %d epochs", len(dataset), self._epochs)
-        train_result = trainer.train()
-
-        # 5. Save adapter
-        adapter_path = run_dir / "adapter"
-        hf.save_adapter(model, adapter_path)
-
-        # 6. Update target
-        target.set_evolvable_state(adapter_path)
-
-        # 7. Hot-swap on inference backend
-        agent.brain.swap_lora(str(adapter_path))
-
-        # 8. Log metrics
-        metrics.log({
-            "sft/num_samples": len(sft_data),
-            "sft/train_loss": train_result.training_loss if hasattr(train_result, "training_loss") else 0,
-            "sft/train_step": self._train_step,
-        })
-
-        # Clean up training model to free GPU memory
-        del model, trainer
         import torch
-        torch.cuda.empty_cache()
+        try:
+            train_result = trainer.train()
 
-        logger.info("SFT complete: adapter saved to %s", adapter_path)
+            # 5. Save adapter
+            adapter_path = run_dir / "adapter"
+            hf.save_adapter(model, adapter_path)
+
+            # 6. Update target
+            target.set_evolvable_state(adapter_path)
+
+            # 7. Hot-swap on inference backend
+            agent.brain.swap_lora(str(adapter_path))
+
+            # 8. Log metrics
+            metrics.log({
+                "sft/num_samples": len(sft_data),
+                "sft/train_loss": train_result.training_loss if hasattr(train_result, "training_loss") else 0,
+                "sft/train_step": self._train_step,
+            })
+
+            logger.info("SFT complete: adapter saved to %s", adapter_path)
+        finally:
+            del model, trainer
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()

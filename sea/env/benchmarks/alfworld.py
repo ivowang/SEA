@@ -209,15 +209,22 @@ class ALFWorldEnv(SEAEnv):
         self._step_count = 0
         self._game_count += 1
 
-        if task_id and task_id in self._game_index:
+        if task_id is not None:
+            # Validate task_id
+            if task_id not in self._game_index:
+                raise ValueError(
+                    f"Unknown task_id '{task_id}'. Use get_task_ids() for valid IDs."
+                )
             # Per-game selection: swap gamefiles to target, then reset
             game_file = self._game_index[task_id]
             self._env.gamefiles = [game_file]
             self._env.num_games = 1
-            obs, infos = self._env.reset()
-            # Restore full gamefiles list after reset
-            self._env.gamefiles = self._all_gamefiles
-            self._env.num_games = len(self._all_gamefiles)
+            try:
+                obs, infos = self._env.reset()
+            finally:
+                # Always restore full gamefiles list
+                self._env.gamefiles = self._all_gamefiles
+                self._env.num_games = len(self._all_gamefiles)
 
             obs_text = obs[0] if isinstance(obs, (list, tuple)) else str(obs)
             task_type = self._game_type_index.get(task_id, self._extract_task_type(obs_text))
@@ -240,9 +247,8 @@ class ALFWorldEnv(SEAEnv):
                     f"This task type may not exist in the '{self._split}' split."
                 )
 
-            # Generate a task_id from the current game for tracking
-            if not task_id:
-                task_id = f"game_{self._game_count}"
+            # Derive real task_id from env state if possible
+            task_id = f"game_{self._game_count}"
 
         # Extract admissible commands
         admissible = None

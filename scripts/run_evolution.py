@@ -59,12 +59,22 @@ def build_from_config(cfg):
     agent_cfg = cfg.get("agent", {})
     brain_cfg = agent_cfg.get("brain", {})
     backend_type = brain_cfg.get("backend", "vllm")
-    backend_kwargs = {k: v for k, v in brain_cfg.items() if k not in ("backend", "system_prompt")}
+    # Separate backend kwargs from brain-only kwargs
+    _brain_only_keys = {"backend", "system_prompt", "lora_name", "lora_path",
+                        "default_temperature", "default_max_tokens"}
+    backend_kwargs = {k: v for k, v in brain_cfg.items() if k not in _brain_only_keys}
     backend = LLM_BACKEND_REGISTRY.build(backend_type, **backend_kwargs)
 
     # 2. Build agent components
     system_prompt = brain_cfg.get("system_prompt", "")
-    brain = LLMBrain(backend=backend, system_prompt=system_prompt)
+    brain = LLMBrain(
+        backend=backend,
+        system_prompt=system_prompt,
+        lora_path=brain_cfg.get("lora_path"),
+        lora_name=brain_cfg.get("lora_name"),
+        default_temperature=brain_cfg.get("default_temperature", 0.7),
+        default_max_tokens=brain_cfg.get("default_max_tokens", 512),
+    )
 
     memory_type = agent_cfg.get("memory", "working")
     if memory_type == "semantic":
@@ -182,6 +192,7 @@ def build_from_config(cfg):
         evaluator=evaluator,
         metrics=metrics,
         config=pipeline_config,
+        extra_targets=extra_evolvables,
     )
 
     return pipeline

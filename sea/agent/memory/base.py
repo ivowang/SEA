@@ -23,12 +23,15 @@ class MemoryEntry:
     score: float = 0.0  # relevance score (filled during retrieval)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "content": self.content,
             "metadata": self.metadata,
             "timestamp": self.timestamp,
             "memory_type": self.memory_type,
         }
+        if self.embedding is not None:
+            d["embedding"] = self.embedding
+        return d
 
 
 class Memory(Checkpointable):

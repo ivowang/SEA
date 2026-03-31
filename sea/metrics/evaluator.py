@@ -87,7 +87,10 @@ class Evaluator:
                     # Sequential env (ALFWorld) or no task IDs — just run N episodes
                     selected = [None] * n_episodes
 
+                n_attempted = 0
+                n_errors = 0
                 for task_id in selected:
+                    n_attempted += 1
                     try:
                         traj = agent.run_episode(
                             env,
@@ -96,8 +99,14 @@ class Evaluator:
                         )
                         env_trajs.append(traj)
                     except Exception as e:
+                        n_errors += 1
                         logger.error("Eval episode failed (env=%s, task=%s): %s",
                                      env.name, task_id, e)
+                if n_errors:
+                    logger.warning(
+                        "Eval: %d/%d episodes failed for env=%s",
+                        n_errors, n_attempted, env.name,
+                    )
 
                 # Unique key to avoid collision with multiple envs of same name
                 env_key = f"{env.name}_{env_idx}" if len(envs) > 1 else env.name
