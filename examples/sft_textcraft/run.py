@@ -69,20 +69,34 @@ SYSTEM_PROMPT = (
 )
 
 
-def collect_api_data(env: TextCraftEnv, n: int) -> list[Trajectory]:
-    """Collect high-quality trajectories using the API backend."""
+def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
+    """Collect trajectories via API with high concurrency.
+
+    Each worker thread gets its own agent + env instance.
+    The API backend's HTTP client is thread-safe.
+    """
     from sea.llm.api_backend import APIBackend
 
-    logger.info("Phase A: Collecting %d trajectories via API...", n)
-    backend = APIBackend(model=API_MODEL, base_url=BASE_URL, api_key=API_KEY)
-    api_agent = SEAAgent(
-        brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
-                       default_max_tokens=150, default_temperature=0.0),
-        memory=WorkingMemory(max_size=20),
-        planner=ReActPlanner(),
+    logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
+
+    def make_agent():
+        backend = APIBackend(model=API_MODEL, base_url=BASE_URL, api_key=API_KEY)
+        return SEAAgent(
+            brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
+                           default_max_tokens=150, default_temperature=0.0),
+            memory=WorkingMemory(max_size=20),
+            planner=ReActPlanner(),
+        )
+
+    def make_env():
+        return TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
+
+    trajectories = TrajectoryCollector.collect_parallel(
+        agent_factory=make_agent,
+        env_factory=make_env,
+        n=n,
+        max_workers=max_workers,
     )
-    collector = TrajectoryCollector()
-    trajectories = collector.collect(api_agent, [env], n=n)
     n_success = sum(1 for t in trajectories if t.success)
     logger.info("Collected %d trajectories (%d successful, %.0f%%)",
                 len(trajectories), n_success, 100 * n_success / max(len(trajectories), 1))
@@ -123,8 +137,8 @@ def main():
     evaluator = Evaluator(num_episodes_per_env=EVAL_EPISODES, eval_temperature=0.0)
     metrics = MetricsTracker(reporters=[ConsoleReporter()])
 
-    # Phase A: Collect training data via API
-    all_trajectories = collect_api_data(env, NUM_COLLECT)
+    # Phase A: Collect training data via API (high concurrency)
+    all_trajectories = collect_api_data(NUM_COLLECT, max_workers=30)
     successful = [t for t in all_trajectories if t.success]
     logger.info("Using %d successful trajectories for SFT training", len(successful))
 

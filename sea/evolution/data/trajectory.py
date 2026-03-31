@@ -134,6 +134,119 @@ class TrajectoryCollector:
         return trajectories
 
     @staticmethod
+    def collect_parallel(
+        agent_factory,
+        env_factory,
+        n: int,
+        max_workers: int = 30,
+        task_ids: list[str] | None = None,
+        only_successful: bool = False,
+    ) -> list[Trajectory]:
+        """Collect n trajectories with high concurrency using thread pool.
+
+        Each worker thread gets its own agent + env instance (created via
+        factory functions) to avoid shared mutable state. The API backend
+        is thread-safe, so all workers share the underlying HTTP connection pool.
+
+        This is ideal for API-based collection where the bottleneck is
+        network latency, not CPU/GPU.
+
+        Args:
+            agent_factory: Callable that returns a fresh SEAAgent instance.
+                Each worker calls this once to get its own agent.
+            env_factory: Callable that returns a fresh SEAEnv instance.
+                Each worker calls this once to get its own environment.
+            n: Number of trajectories to collect.
+            max_workers: Maximum concurrent threads.
+            task_ids: Optional list of task IDs to cycle through.
+            only_successful: If True, only return successful trajectories
+                (will collect more than n to meet the target).
+
+        Returns:
+            List of Trajectory objects.
+
+        Example:
+            trajectories = TrajectoryCollector.collect_parallel(
+                agent_factory=lambda: SEAAgent(brain=LLMBrain(APIBackend(...)), ...),
+                env_factory=lambda: TextCraftEnv(max_steps_val=15),
+                n=100,
+                max_workers=30,
+            )
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        results: list[Trajectory] = []
+        results_lock = threading.Lock()
+        completed = threading.Event()
+
+        # Determine task assignments
+        if task_ids:
+            assignments = [task_ids[i % len(task_ids)] for i in range(n)]
+        else:
+            assignments = [None] * n
+
+        # If only_successful, we may need to oversample
+        target = n
+        if only_successful:
+            assignments = [None] * (n * 3)  # initial oversample 3x
+
+        def _run_one(idx: int, task_id: str | None) -> Trajectory | None:
+            """Run one episode in its own agent+env."""
+            if completed.is_set():
+                return None
+            try:
+                agent = agent_factory()
+                env = env_factory()
+                try:
+                    traj = agent.run_episode(env, task_id=task_id)
+                    traj.metadata["env_name"] = env.name
+                    traj.metadata["worker_idx"] = idx
+                    return traj
+                finally:
+                    env.close()
+            except Exception as e:
+                logger.error("Worker %d failed: %s", idx, e)
+                return None
+
+        logger.info(
+            "Starting parallel collection: target=%d, workers=%d, only_successful=%s",
+            target, min(max_workers, len(assignments)), only_successful,
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_run_one, i, tid): i
+                for i, tid in enumerate(assignments)
+            }
+
+            for future in as_completed(futures):
+                traj = future.result()
+                if traj is None:
+                    continue
+
+                if only_successful and not traj.success:
+                    continue
+
+                with results_lock:
+                    results.append(traj)
+                    count = len(results)
+
+                if count % 10 == 0 or count == target:
+                    logger.info("  Progress: %d/%d trajectories collected", count, target)
+
+                if count >= target:
+                    completed.set()
+                    break
+
+        success_count = sum(1 for t in results if t.success)
+        logger.info(
+            "Parallel collection done: %d trajectories (%.1f%% success)",
+            len(results), 100 * success_count / max(len(results), 1),
+        )
+        return results[:target]
+
+    @staticmethod
     def collect_subprocess(
         target_per_type: dict[str, int] | None = None,
         n: int = 0,

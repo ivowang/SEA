@@ -71,20 +71,34 @@ SYSTEM_PROMPT = (
 )
 
 
-def collect_api_data(env: TextCraftEnv, n: int) -> list[Trajectory]:
-    """Collect trajectories via API (both successes and failures needed for RL)."""
+def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
+    """Collect trajectories via API with high concurrency.
+
+    Both successes and failures are needed for REINFORCE.
+    Uses slightly higher temperature for diverse exploration.
+    """
     from sea.llm.api_backend import APIBackend
 
-    logger.info("Phase A: Collecting %d trajectories via API...", n)
-    backend = APIBackend(model=API_MODEL, base_url=BASE_URL, api_key=API_KEY)
-    api_agent = SEAAgent(
-        brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
-                       default_max_tokens=150, default_temperature=0.3),  # slightly higher temp for diversity
-        memory=WorkingMemory(max_size=20),
-        planner=ReActPlanner(),
+    logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
+
+    def make_agent():
+        backend = APIBackend(model=API_MODEL, base_url=BASE_URL, api_key=API_KEY)
+        return SEAAgent(
+            brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
+                           default_max_tokens=150, default_temperature=0.3),
+            memory=WorkingMemory(max_size=20),
+            planner=ReActPlanner(),
+        )
+
+    def make_env():
+        return TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
+
+    trajectories = TrajectoryCollector.collect_parallel(
+        agent_factory=make_agent,
+        env_factory=make_env,
+        n=n,
+        max_workers=max_workers,
     )
-    collector = TrajectoryCollector()
-    trajectories = collector.collect(api_agent, [env], n=n)
     n_success = sum(1 for t in trajectories if t.success)
     n_fail = len(trajectories) - n_success
     logger.info("Collected: %d success, %d fail (both needed for REINFORCE)", n_success, n_fail)
@@ -125,8 +139,8 @@ def main():
     evaluator = Evaluator(num_episodes_per_env=EVAL_EPISODES, eval_temperature=0.0)
     metrics = MetricsTracker(reporters=[ConsoleReporter()])
 
-    # Phase A: Collect diverse trajectories via API
-    all_trajectories = collect_api_data(env, NUM_COLLECT)
+    # Phase A: Collect diverse trajectories via API (high concurrency)
+    all_trajectories = collect_api_data(NUM_COLLECT, max_workers=30)
 
     # Phase B: Load local model and evaluate baseline
     agent = build_local_agent(env)
