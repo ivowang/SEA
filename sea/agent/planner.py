@@ -33,6 +33,7 @@ class PlanningContext:
     working_memory: list[dict[str, Any]] = field(default_factory=list)
     retrieved_memories: list[Any] = field(default_factory=list)
     retrieved_skills: list[Any] = field(default_factory=list)
+    skill_index: list[Any] = field(default_factory=list)  # lightweight skill catalog
     available_tools: list[Any] = field(default_factory=list)
     task_description: str = ""
     step_number: int = 0
@@ -98,11 +99,24 @@ class ReActPlanner(Planner):
                 tool_descs.append(f"- {t.name}: {t.description}")
             system_parts.append("\nAvailable tools:\n" + "\n".join(tool_descs))
 
-        # Retrieved skills
+        # Skill index (lightweight catalog — always present if skills exist)
+        if context.skill_index:
+            from sea.agent.skills.disclosure import view_to_prompt
+            index_lines = [view_to_prompt(sv) for sv in context.skill_index]
+            system_parts.append(
+                "\nAvailable skills (use read_skill tool for full details):\n"
+                + "\n".join(index_lines)
+            )
+
+        # Retrieved skills (summary/full level for top-k matches)
         if context.retrieved_skills:
+            from sea.agent.skills.disclosure import view_to_prompt as _vtp
             skill_parts = []
             for s in context.retrieved_skills:
-                skill_parts.append(s.to_prompt())
+                if hasattr(s, "level"):
+                    skill_parts.append(_vtp(s))
+                else:
+                    skill_parts.append(s.to_prompt())  # legacy Skill compat
             system_parts.append("\nRelevant skills:\n" + "\n---\n".join(skill_parts))
 
         messages.append({"role": "system", "content": "\n".join(system_parts)})

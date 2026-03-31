@@ -58,10 +58,13 @@ class CodeSkill(Skill):
             examples=data.get("examples", []),
         )
 
-    # Note: execute_in_sandbox was removed because exec() with empty
-    # __builtins__ is neither safe nor functional. Skills are used as
-    # LLM context via to_prompt(), not executed directly. For executable
-    # capabilities, register a Tool in the ToolRegistry instead.
+    def to_skill_md(self):
+        from sea.agent.skills.skill_md import SkillFrontmatter, SkillMd
+        fm = SkillFrontmatter(
+            name=self._info.name, description=self._info.description,
+            tags=self._info.tags,
+        )
+        return SkillMd(frontmatter=fm, body=f"## Code\n```python\n{self.source_code}\n```")
 
 
 class TextSkill(Skill):
@@ -109,6 +112,14 @@ class TextSkill(Skill):
             examples=data.get("examples", []),
         )
 
+    def to_skill_md(self):
+        from sea.agent.skills.skill_md import SkillFrontmatter, SkillMd
+        fm = SkillFrontmatter(
+            name=self._info.name, description=self._info.description,
+            tags=self._info.tags,
+        )
+        return SkillMd(frontmatter=fm, body=self.instructions)
+
 
 class ComposedSkill(TextSkill):
     """A higher-level skill composed from atomic sub-skills.
@@ -153,3 +164,14 @@ class ComposedSkill(TextSkill):
             sub_skills=data.get("sub_skills", []),
             tags=data.get("tags", []),
         )
+
+    def to_skill_md(self):
+        from sea.agent.skills.skill_md import SkillFrontmatter, SkillMd
+        fm = SkillFrontmatter(
+            name=self._info.name, description=self._info.description,
+            tags=self._info.tags, sub_skills=self._info.sub_skills,
+        )
+        body_parts = [f"## Plan\n{self._info.composition_plan}"]
+        if self._info.sub_skills:
+            body_parts.append("## Sub-skills\n" + "\n".join(f"- {s}" for s in self._info.sub_skills))
+        return SkillMd(frontmatter=fm, body="\n\n".join(body_parts))

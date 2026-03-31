@@ -57,3 +57,14 @@ class Skill(ABC):
             "examples": self.info.examples,
             "type": self.__class__.__name__,
         }
+
+    def to_skill_md(self):
+        """Convert this legacy Skill to a SkillMd object."""
+        from sea.agent.skills.skill_md import SkillFrontmatter, SkillMd
+        fm = SkillFrontmatter(
+            name=self.info.name,
+            description=self.info.description,
+            tags=self.info.tags,
+            sub_skills=self.info.sub_skills,
+        )
+        return SkillMd(frontmatter=fm, body=self.to_prompt())

@@ -65,6 +65,13 @@ class SEAAgent(Checkpointable):
         skill_query = task_description if task_description else observation.text[:200]
         mem_query = observation.text[:300]
         retrieved_memories = self.memory.retrieve(mem_query, k=self._memory_k)
+
+        # Progressive disclosure: lightweight index + detailed top-k
+        skill_index = (
+            self.skill_library.get_index()
+            if len(self.skill_library) > 0
+            else []
+        )
         retrieved_skills = (
             self.skill_library.retrieve(skill_query, k=self._skill_k)
             if len(self.skill_library) > 0
@@ -75,6 +82,7 @@ class SEAAgent(Checkpointable):
             observation=observation,
             retrieved_memories=retrieved_memories,
             retrieved_skills=retrieved_skills,
+            skill_index=skill_index,
             available_tools=self.tool_registry.list_tools(),
             task_description=task_description,
             step_number=step,
