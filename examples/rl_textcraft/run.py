@@ -1,165 +1,202 @@
 #!/usr/bin/env python3
-"""RL (GRPO) Evolution on TextCraft: Environment-backed reward.
+"""Tutorial 4: RL Evolution (REINFORCE) on TextCraft.
 
-Uses GRPO with environment-in-the-loop reward: the model generates
-crafting action sequences, which are parsed and executed in TextCraft
-to get real rewards. This grounds the RL signal in actual task success.
+Demonstrates offline trajectory-level REINFORCE:
+- Phase A: Collect trajectories via API (both successes and failures)
+- Phase B: Evaluate baseline local model (Qwen2.5-7B on vLLM)
+- Phase C: REINFORCE training loop (policy gradient from real rewards)
 
-Requires 2 GPUs: one for vLLM inference, one for GRPO training.
+Unlike SFT (which only learns from successes), REINFORCE learns from
+BOTH successes and failures via advantage-weighted policy gradient.
+
+Expected result: success rate improves as the model learns to assign
+higher probability to actions in successful trajectories.
 
 Usage:
-    export SEA_MODEL_PATH="/root/models/Qwen3.5-9B"
-    export SEA_INFERENCE_GPU="4"
-    export SEA_TRAINING_GPU="5"
     python examples/rl_textcraft/run.py
+
+Requires:
+    - GPU 4-5 for vLLM inference (TP=2)
+    - GPU 7 for REINFORCE training
+    - Qwen/Qwen2.5-7B-Instruct model downloaded
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from sea.utils.logging import setup_logging
 
-setup_logging(level="INFO")
-logger = logging.getLogger("rl_textcraft")
-
-MODEL_PATH = os.environ.get("SEA_MODEL_PATH", "/root/models/Qwen3.5-9B")
-INFERENCE_GPU = os.environ.get("SEA_INFERENCE_GPU", "4")
-TRAINING_GPU = os.environ.get("SEA_TRAINING_GPU", "5")
-
-NUM_ITERATIONS = 3
-NUM_COLLECT = 20
-NUM_EVAL = 10
-OUTPUT_DIR = Path("outputs/rl_textcraft")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-os.environ["CUDA_VISIBLE_DEVICES"] = f"{INFERENCE_GPU},{TRAINING_GPU}"
-
-# ── Build components ──────────────────────────────────────────────────
-from sea.llm.vllm_backend import VLLMBackend
 from sea.agent.agent import SEAAgent
 from sea.agent.brain import LLMBrain
-from sea.agent.memory.episodic import EpisodicMemory
+from sea.agent.memory.working import WorkingMemory
 from sea.agent.planner import ReActPlanner
+from sea.core.types import Trajectory
 from sea.env.benchmarks.textcraft import TextCraftEnv
+from sea.evolution.data.trajectory import TrajectoryCollector
 from sea.evolution.methods.rl import RLEvolver
 from sea.evolution.targets.lm_params import LoRATarget
-from sea.evolution.data.trajectory import TrajectoryCollector
+from sea.metrics.evaluator import Evaluator
 from sea.metrics.tracker import MetricsTracker
 from sea.metrics.reporters.console import ConsoleReporter
-from sea.metrics.evaluator import Evaluator
 
-logger.info("=" * 60)
-logger.info("RL (GRPO) Evolution on TextCraft")
-logger.info("=" * 60)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
-backend = VLLMBackend(
-    model=MODEL_PATH,
-    tensor_parallel_size=1,
-    gpu_memory_utilization=0.85,
-    max_model_len=4096,
-    enable_lora=True,
-    max_lora_rank=64,
-    dtype="bfloat16",
-    device="cuda:0",
-    enforce_eager=True,
+# ── Config ──────────────────────────────────────────────────────────
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+INFERENCE_DEVICE = "cuda:4"  # vLLM TP=2 across 4,5
+TRAINING_DEVICE = "cuda:7"
+NUM_COLLECT = 80       # need both successes AND failures
+NUM_RL_ITERS = 3
+EVAL_EPISODES = 20
+NUM_TASKS = 50
+MAX_STEPS = 15
+OUTPUT_DIR = Path("outputs/tutorial_rl")
+
+env_json = Path(__file__).resolve().parent.parent.parent / "env.json"
+with open(env_json) as f:
+    creds = json.load(f)["aigocode-gpt"]
+API_KEY = creds["apiKey"]
+BASE_URL = creds["baseUrl"] + "/v1"
+API_MODEL = "openai/gpt-5.4-nano"
+
+SYSTEM_PROMPT = (
+    "You are a Minecraft crafting agent. Follow recipes step by step.\n"
+    "First check what you have, then gather materials, then craft.\n"
+    "Use exact item names from the available actions."
 )
 
-agent = SEAAgent(
-    brain=LLMBrain(
+
+def collect_api_data(env: TextCraftEnv, n: int) -> list[Trajectory]:
+    """Collect trajectories via API (both successes and failures needed for RL)."""
+    from sea.llm.api_backend import APIBackend
+
+    logger.info("Phase A: Collecting %d trajectories via API...", n)
+    backend = APIBackend(model=API_MODEL, base_url=BASE_URL, api_key=API_KEY)
+    api_agent = SEAAgent(
+        brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
+                       default_max_tokens=150, default_temperature=0.3),  # slightly higher temp for diversity
+        memory=WorkingMemory(max_size=20),
+        planner=ReActPlanner(),
+    )
+    collector = TrajectoryCollector()
+    trajectories = collector.collect(api_agent, [env], n=n)
+    n_success = sum(1 for t in trajectories if t.success)
+    n_fail = len(trajectories) - n_success
+    logger.info("Collected: %d success, %d fail (both needed for REINFORCE)", n_success, n_fail)
+    return trajectories
+
+
+def build_local_agent(env: TextCraftEnv) -> SEAAgent:
+    """Build agent with local vLLM backend."""
+    from sea.llm.vllm_backend import VLLMBackend
+
+    logger.info("Phase B: Loading local model %s on vLLM (TP=2)...", MODEL_NAME)
+    backend = VLLMBackend(
+        model=MODEL_NAME,
+        device=INFERENCE_DEVICE,
+        tensor_parallel_size=2,
+        enable_lora=True,
+        max_lora_rank=32,
+    )
+    brain = LLMBrain(
         backend=backend,
-        system_prompt=(
-            "You are a Minecraft crafting agent. You receive crafting recipes and a goal.\n"
-            "Commands: get <count> <item> | craft <count> <item> using <ingredients> | inventory\n"
-            "Work backwards from the goal. Get raw materials first, then craft.\n"
-            "Respond with:\nThought: <reasoning>\nAction: <command>"
-        ),
-        default_max_tokens=256,
-        default_temperature=0.7,
-    ),
-    memory=EpisodicMemory(max_size=200),
-    planner=ReActPlanner(),
-)
+        system_prompt=SYSTEM_PROMPT,
+        default_max_tokens=150,
+        default_temperature=0.0,
+    )
+    return SEAAgent(
+        brain=brain,
+        memory=WorkingMemory(max_size=20),
+        planner=ReActPlanner(),
+    )
 
-env = TextCraftEnv(max_steps_val=15, num_tasks=50)
 
-# Create a separate env instance for GRPO reward evaluation
-reward_env = TextCraftEnv(max_steps_val=15, num_tasks=50)
-
-# LoRA target for RL
-lora_target = LoRATarget(
-    base_model_name=MODEL_PATH,
-    adapter_dir=OUTPUT_DIR / "adapter_init",
-)
-
-# GRPO evolver with environment-backed reward
-evolver = RLEvolver(
-    model_name=MODEL_PATH,
-    algorithm="grpo",
-    device="cuda:1",
-    learning_rate=1e-5,
-    num_epochs=1,
-    batch_size=2,
-    gradient_accumulation_steps=4,
-    max_completion_length=512,
-    num_generations=4,
-    output_dir=str(OUTPUT_DIR),
-    envs=[reward_env],  # Environment for reward computation
-)
-
-metrics = MetricsTracker(reporters=[ConsoleReporter()])
-evaluator = Evaluator(num_episodes_per_env=NUM_EVAL, eval_temperature=0.0)
-collector = TrajectoryCollector()
-
-# ── Baseline ──────────────────────────────────────────────────────────
-logger.info("Baseline evaluation ...")
-baseline = evaluator.evaluate(agent, [env])
-logger.info("Baseline: success=%.0f%%, reward=%.3f, steps=%.1f",
-            baseline.success_rate * 100, baseline.avg_reward, baseline.avg_steps)
-
-# ── Evolution loop ────────────────────────────────────────────────────
-results = [("baseline", baseline.success_rate, baseline.avg_reward)]
-
-for iteration in range(1, NUM_ITERATIONS + 1):
+def main():
     logger.info("=" * 60)
-    logger.info("Iteration %d / %d", iteration, NUM_ITERATIONS)
+    logger.info("Tutorial 4: RL Evolution (REINFORCE)")
     logger.info("=" * 60)
 
-    # Collect trajectories for prompts
-    trajectories = collector.collect(agent, [env], n=NUM_COLLECT)
-    n_ok = sum(1 for t in trajectories if t.success)
-    logger.info("Collected: %d/%d successful", n_ok, len(trajectories))
+    env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
+    evaluator = Evaluator(num_episodes_per_env=EVAL_EPISODES, eval_temperature=0.0)
+    metrics = MetricsTracker(reporters=[ConsoleReporter()])
 
-    # GRPO evolution with env-backed reward
-    evolver.evolve(agent, lora_target, trajectories, metrics, envs=[reward_env])
+    # Phase A: Collect diverse trajectories via API
+    all_trajectories = collect_api_data(env, NUM_COLLECT)
 
-    # Hot-swap new adapter
-    adapter_path = lora_target.get_evolvable_state()
-    if adapter_path.exists():
-        agent.brain.backend.load_lora(str(adapter_path), name=f"iter_{iteration}")
-        agent.brain.lora_name = f"iter_{iteration}"
-        logger.info("LoRA hot-swapped: %s", adapter_path)
+    # Phase B: Load local model and evaluate baseline
+    agent = build_local_agent(env)
+    lora_target = LoRATarget(
+        base_model_name=MODEL_NAME,
+        adapter_dir=OUTPUT_DIR / "adapter_init",
+    )
 
-    # Evaluate
-    result = evaluator.evaluate(agent, [env])
-    results.append((f"iter_{iteration}", result.success_rate, result.avg_reward))
-    logger.info("Iter %d: success=%.0f%%, reward=%.3f (baseline %.0f%%)",
-                iteration, result.success_rate * 100, result.avg_reward, baseline.success_rate * 100)
+    logger.info("Evaluating baseline (no LoRA)...")
+    baseline_sr = evaluator.evaluate(agent, [env]).success_rate
+    logger.info("Baseline: success_rate=%.1f%%", baseline_sr * 100)
 
-# ── Summary ───────────────────────────────────────────────────────────
-logger.info("=" * 60)
-logger.info("Summary")
-logger.info("=" * 60)
-for name, sr, ar in results:
-    logger.info("  %-12s  success=%.0f%%  reward=%.3f", name, sr * 100, ar)
-logger.info("Improvement: %+.0f%% success rate", (results[-1][1] - results[0][1]) * 100)
+    # Phase C: REINFORCE training loop
+    rl = RLEvolver(
+        model_name=MODEL_NAME,
+        algorithm="reinforce",
+        device=TRAINING_DEVICE,
+        learning_rate=1e-5,
+        num_epochs=1,
+        batch_size=4,
+        gradient_accumulation_steps=4,
+        max_seq_length=1024,
+        gamma=0.99,
+        entropy_coeff=0.01,
+        output_dir=str(OUTPUT_DIR),
+        torch_dtype="bfloat16",
+    )
 
-(OUTPUT_DIR / "summary.json").write_text(json.dumps({
-    "model": MODEL_PATH, "benchmark": "textcraft", "algorithm": "grpo",
-    "results": [{"stage": n, "success_rate": s, "avg_reward": r} for n, s, r in results],
-}, indent=2))
+    results_table = [("Baseline", baseline_sr)]
+
+    for iteration in range(1, NUM_RL_ITERS + 1):
+        logger.info("\n── REINFORCE Iteration %d/%d ──", iteration, NUM_RL_ITERS)
+
+        # Log trajectory stats
+        n_success = sum(1 for t in all_trajectories if t.success)
+        avg_reward = sum(t.total_reward for t in all_trajectories) / max(len(all_trajectories), 1)
+        logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
+                    len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
+
+        # Train with REINFORCE
+        rl.evolve(agent, lora_target, all_trajectories, metrics)
+
+        # Evaluate
+        sr = evaluator.evaluate(agent, [env]).success_rate
+        logger.info("Iter %d: success_rate=%.1f%%", iteration, sr * 100)
+        results_table.append((f"RL Iter {iteration}", sr))
+
+        # Collect more trajectories with improved model
+        logger.info("Collecting more trajectories with improved model...")
+        new_trajs = TrajectoryCollector().collect(agent, [env], n=30)
+        all_trajectories.extend(new_trajs)
+
+    # Summary
+    logger.info("\n" + "=" * 60)
+    logger.info("RESULTS SUMMARY")
+    logger.info("=" * 60)
+    logger.info("%-15s  %-15s", "Stage", "Success Rate")
+    logger.info("-" * 32)
+    for stage, sr in results_table:
+        logger.info("%-15s  %-15s", stage, f"{sr*100:.1f}%")
+
+    improvement = results_table[-1][1] - results_table[0][1]
+    logger.info("\nImprovement: %+.1f%%", improvement * 100)
+    logger.info("\nKey difference from SFT:")
+    logger.info("  SFT only learns from successes (imitation learning)")
+    logger.info("  REINFORCE learns from both successes AND failures (policy gradient)")
+
+    env.close()
+    logger.info("Done! LoRA adapter saved to %s", OUTPUT_DIR)
+
+
+if __name__ == "__main__":
+    main()
