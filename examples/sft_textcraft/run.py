@@ -229,7 +229,8 @@ def main():
 
     # ── Phase B: Load model ONCE, then train/eval loop ──
     logger.info("Loading model %s on %s...", MODEL_NAME, GPU_DEVICE)
-    hf = HFTrainingBackend(model_name=MODEL_NAME, device=GPU_DEVICE, torch_dtype="bfloat16")
+    hf = HFTrainingBackend(model_name=MODEL_NAME, device=GPU_DEVICE, torch_dtype="bfloat16",
+                           load_in_4bit=True)  # 4-bit quantization to fit train+eval on 40GB
     model = hf.get_trainable_model(lora_config={"r": 16, "lora_alpha": 32,
                                                   "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]})
     tokenizer = hf.get_tokenizer()
