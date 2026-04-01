@@ -3,11 +3,11 @@
 
 Demonstrates supervised fine-tuning of a local LLM:
 - Phase A: Collect training data via API with high concurrency (no GPU)
-- Phase B: Train/eval loop on a single GPU — alternating between
-  LoRA training (HFTrainingBackend) and inference (vLLM)
+- Phase B: Single-GPU train/eval loop using HF model throughout
+  (no vLLM — the same model is used for training and inference)
 
-Only 1 GPU needed. Training and inference share the same card by
-loading/unloading models between stages.
+Only 1 GPU needed. The HF model stays loaded; LoRA adapters are
+merged/swapped between train and eval stages.
 
 Usage:
     python examples/sft_textcraft/run.py
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-GPU_DEVICE = "cuda:6"          # single GPU for both training and inference
-NUM_COLLECT = 50               # API trajectories for training data
+GPU_DEVICE = "cuda:6"
+NUM_COLLECT = 50
 NUM_SFT_ITERS = 3
 EVAL_EPISODES = 20
 NUM_TASKS = 50
@@ -107,50 +107,71 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
     return trajectories
 
 
-def load_vllm_agent(lora_path: str | None = None) -> SEAAgent:
-    """Load vLLM on the single GPU for evaluation."""
-    from sea.llm.vllm_backend import VLLMBackend
+def build_hf_agent(adapter_path: str | None = None) -> SEAAgent:
+    """Build agent using HF model for inference (same model used for training).
 
-    backend = VLLMBackend(
-        model=MODEL_NAME,
+    This avoids loading vLLM separately — one model for both train and eval.
+    """
+    from sea.llm.hf_backend import HFTrainingBackend
+
+    logger.info("Loading HF model %s on %s (adapter: %s)...",
+                MODEL_NAME, GPU_DEVICE, adapter_path or "none")
+    hf = HFTrainingBackend(
+        model_name=MODEL_NAME,
         device=GPU_DEVICE,
-        tensor_parallel_size=1,
-        enable_lora=True,
-        max_lora_rank=32,
+        torch_dtype="bfloat16",
     )
-    brain = LLMBrain(
-        backend=backend,
-        system_prompt=SYSTEM_PROMPT,
-        default_max_tokens=150,
-        default_temperature=0.0,
-        lora_path=lora_path,
-    )
-    return SEAAgent(
-        brain=brain,
-        memory=WorkingMemory(max_size=20),
-        planner=ReActPlanner(),
-    )
+    model = hf.get_trainable_model(adapter_path=adapter_path)
+    tokenizer = hf.get_tokenizer()
 
+    # Wrap HF model as a simple generate-only backend
+    class _HFInferenceBackend:
+        """Minimal LLMBackend wrapper around a HF model for inference."""
+        def __init__(self, model, tokenizer, device):
+            self._model = model
+            self._tokenizer = tokenizer
+            self._device = device
+            self.model_name = MODEL_NAME
 
-def shutdown_vllm(agent: SEAAgent) -> None:
-    """Shutdown vLLM and free GPU memory."""
-    try:
-        if hasattr(agent.brain.backend, 'llm'):
-            from vllm.distributed.parallel_state import destroy_model_parallel
-            del agent.brain.backend.llm
-            destroy_model_parallel()
-    except Exception:
-        pass
-    del agent
-    gc.collect()
-    torch.cuda.empty_cache()
-    logger.info("vLLM shutdown, GPU memory freed")
+        def generate(self, messages, *, temperature=0.0, max_tokens=150,
+                     stop=None, lora_name=None, **kwargs):
+            from sea.core.types import GenerationOutput
+            if hasattr(self._tokenizer, "apply_chat_template"):
+                prompt = self._tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True)
+            else:
+                prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+
+            inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                out = self._model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=max(temperature, 0.01),
+                    do_sample=temperature > 0,
+                    pad_token_id=self._tokenizer.eos_token_id,
+                )
+            new_tokens = out[0][inputs["input_ids"].shape[1]:]
+            text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+            return GenerationOutput(text=text)
+
+        def generate_batch(self, batches, **kw):
+            return [self.generate(msgs, **kw) for msgs in batches]
+
+        def supports_lora(self): return False
+        def load_lora(self, *a, **kw): pass
+        def unload_lora(self, *a, **kw): pass
+
+    backend = _HFInferenceBackend(model, tokenizer, GPU_DEVICE)
+    brain = LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
+                     default_max_tokens=150, default_temperature=0.0)
+    return SEAAgent(brain=brain, memory=WorkingMemory(max_size=20), planner=ReActPlanner())
 
 
 def main():
     logger.info("=" * 60)
     logger.info("Tutorial 3: SFT Evolution (LoRA Fine-Tuning)")
-    logger.info("Single GPU mode: %s", GPU_DEVICE)
+    logger.info("Single GPU: %s", GPU_DEVICE)
     logger.info("=" * 60)
 
     env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
@@ -186,41 +207,38 @@ def main():
 
     results_table = []
 
-    # ── Phase B: Train/Eval loop (single GPU, alternating) ──
+    # ── Phase B: Train/Eval loop ──
     for iteration in range(NUM_SFT_ITERS + 1):
-        # --- Eval stage: load vLLM on GPU ---
-        lora_path = None
+        # --- Eval: load HF model (with adapter if available) ---
+        adapter_path = None
         if iteration > 0:
             state = lora_target.get_evolvable_state()
-            lora_path = str(state) if state and Path(str(state)).exists() else None
+            adapter_path = str(state) if state and Path(str(state)).exists() else None
 
         label = "Baseline" if iteration == 0 else f"SFT Iter {iteration}"
-        logger.info("\n── %s: Loading vLLM for evaluation ──", label)
-        agent = load_vllm_agent(lora_path=lora_path)
+        logger.info("\n── %s: Evaluating ──", label)
 
+        agent = build_hf_agent(adapter_path=adapter_path)
         sr = evaluator.evaluate(agent, [env]).success_rate
         logger.info("%s: success_rate=%.1f%%", label, sr * 100)
         results_table.append((label, sr))
 
-        # Shutdown vLLM to free GPU for training
-        shutdown_vllm(agent)
+        # Free eval model
+        del agent
+        gc.collect()
+        torch.cuda.empty_cache()
 
         if iteration == NUM_SFT_ITERS:
-            break  # done, no more training
+            break
 
-        # --- Train stage: load HF model on same GPU ---
+        # --- Train: SFTEvolver loads its own model internally ---
         logger.info("\n── SFT Training %d/%d ──", iteration + 1, NUM_SFT_ITERS)
-        # SFTEvolver.evolve() loads model internally, trains, saves, frees
-        # We pass a dummy agent just for brain.swap_lora (which will be a no-op
-        # since vLLM is down; the adapter is saved to lora_target)
         from unittest.mock import MagicMock
         dummy_agent = MagicMock()
         dummy_agent.brain = MagicMock()
-        dummy_agent.brain.swap_lora = MagicMock()  # skip hot-swap (no vLLM running)
+        dummy_agent.brain.swap_lora = MagicMock()
         dummy_agent.brain.system_prompt = SYSTEM_PROMPT
-
         sft.evolve(dummy_agent, lora_target, successful, metrics)
-        logger.info("Adapter saved. Freeing training GPU memory...")
 
     # ── Summary ──
     logger.info("\n" + "=" * 60)

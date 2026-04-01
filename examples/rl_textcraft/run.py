@@ -3,13 +3,12 @@
 
 Demonstrates offline trajectory-level REINFORCE:
 - Phase A: Collect trajectories via API with high concurrency (no GPU)
-- Phase B: Train/eval loop on a single GPU — alternating between
-  REINFORCE training (HFTrainingBackend) and inference (vLLM)
+- Phase B: Single-GPU train/eval loop using HF model throughout
 
 Unlike SFT (which only learns from successes), REINFORCE learns from
 BOTH successes and failures via advantage-weighted policy gradient.
 
-Only 1 GPU needed. Training and inference share the same card.
+Only 1 GPU needed. Same HF model used for both training and evaluation.
 
 Usage:
     python examples/rl_textcraft/run.py
@@ -49,8 +48,8 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-GPU_DEVICE = "cuda:7"          # single GPU for both training and inference
-NUM_COLLECT = 80               # need both successes AND failures
+GPU_DEVICE = "cuda:7"
+NUM_COLLECT = 80
 NUM_RL_ITERS = 3
 EVAL_EPISODES = 20
 NUM_TASKS = 50
@@ -80,10 +79,7 @@ SYSTEM_PROMPT = (
 
 
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API with high concurrency (no GPU needed).
-
-    Both successes and failures are needed for REINFORCE.
-    """
+    """Collect trajectories via API with high concurrency (no GPU needed)."""
     from sea.llm.api_backend import APIBackend
 
     logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
@@ -112,50 +108,67 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
     return trajectories
 
 
-def load_vllm_agent(lora_path: str | None = None) -> SEAAgent:
-    """Load vLLM on the single GPU for evaluation."""
-    from sea.llm.vllm_backend import VLLMBackend
+def build_hf_agent(adapter_path: str | None = None) -> SEAAgent:
+    """Build agent using HF model for inference (same model used for training)."""
+    from sea.llm.hf_backend import HFTrainingBackend
 
-    backend = VLLMBackend(
-        model=MODEL_NAME,
+    logger.info("Loading HF model %s on %s (adapter: %s)...",
+                MODEL_NAME, GPU_DEVICE, adapter_path or "none")
+    hf = HFTrainingBackend(
+        model_name=MODEL_NAME,
         device=GPU_DEVICE,
-        tensor_parallel_size=1,
-        enable_lora=True,
-        max_lora_rank=32,
+        torch_dtype="bfloat16",
     )
-    brain = LLMBrain(
-        backend=backend,
-        system_prompt=SYSTEM_PROMPT,
-        default_max_tokens=150,
-        default_temperature=0.0,
-        lora_path=lora_path,
-    )
-    return SEAAgent(
-        brain=brain,
-        memory=WorkingMemory(max_size=20),
-        planner=ReActPlanner(),
-    )
+    model = hf.get_trainable_model(adapter_path=adapter_path)
+    tokenizer = hf.get_tokenizer()
 
+    class _HFInferenceBackend:
+        """Minimal LLMBackend wrapper around a HF model for inference."""
+        def __init__(self, model, tokenizer, device):
+            self._model = model
+            self._tokenizer = tokenizer
+            self._device = device
+            self.model_name = MODEL_NAME
 
-def shutdown_vllm(agent: SEAAgent) -> None:
-    """Shutdown vLLM and free GPU memory."""
-    try:
-        if hasattr(agent.brain.backend, 'llm'):
-            from vllm.distributed.parallel_state import destroy_model_parallel
-            del agent.brain.backend.llm
-            destroy_model_parallel()
-    except Exception:
-        pass
-    del agent
-    gc.collect()
-    torch.cuda.empty_cache()
-    logger.info("vLLM shutdown, GPU memory freed")
+        def generate(self, messages, *, temperature=0.0, max_tokens=150,
+                     stop=None, lora_name=None, **kwargs):
+            from sea.core.types import GenerationOutput
+            if hasattr(self._tokenizer, "apply_chat_template"):
+                prompt = self._tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True)
+            else:
+                prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+
+            inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                out = self._model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=max(temperature, 0.01),
+                    do_sample=temperature > 0,
+                    pad_token_id=self._tokenizer.eos_token_id,
+                )
+            new_tokens = out[0][inputs["input_ids"].shape[1]:]
+            text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+            return GenerationOutput(text=text)
+
+        def generate_batch(self, batches, **kw):
+            return [self.generate(msgs, **kw) for msgs in batches]
+
+        def supports_lora(self): return False
+        def load_lora(self, *a, **kw): pass
+        def unload_lora(self, *a, **kw): pass
+
+    backend = _HFInferenceBackend(model, tokenizer, GPU_DEVICE)
+    brain = LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
+                     default_max_tokens=150, default_temperature=0.0)
+    return SEAAgent(brain=brain, memory=WorkingMemory(max_size=20), planner=ReActPlanner())
 
 
 def main():
     logger.info("=" * 60)
     logger.info("Tutorial 4: RL Evolution (REINFORCE)")
-    logger.info("Single GPU mode: %s", GPU_DEVICE)
+    logger.info("Single GPU: %s", GPU_DEVICE)
     logger.info("=" * 60)
 
     env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
@@ -191,38 +204,37 @@ def main():
 
     results_table = []
 
-    # ── Phase B: Train/Eval loop (single GPU, alternating) ──
+    # ── Phase B: Train/Eval loop ──
     for iteration in range(NUM_RL_ITERS + 1):
-        # --- Eval stage: load vLLM on GPU ---
-        lora_path = None
+        # --- Eval: load HF model (with adapter if available) ---
+        adapter_path = None
         if iteration > 0:
             state = lora_target.get_evolvable_state()
-            lora_path = str(state) if state and Path(str(state)).exists() else None
+            adapter_path = str(state) if state and Path(str(state)).exists() else None
 
         label = "Baseline" if iteration == 0 else f"RL Iter {iteration}"
-        logger.info("\n── %s: Loading vLLM for evaluation ──", label)
-        agent = load_vllm_agent(lora_path=lora_path)
+        logger.info("\n── %s: Evaluating ──", label)
 
+        agent = build_hf_agent(adapter_path=adapter_path)
         sr = evaluator.evaluate(agent, [env]).success_rate
         logger.info("%s: success_rate=%.1f%%", label, sr * 100)
         results_table.append((label, sr))
 
-        # Shutdown vLLM to free GPU for training
-        shutdown_vllm(agent)
+        del agent
+        gc.collect()
+        torch.cuda.empty_cache()
 
         if iteration == NUM_RL_ITERS:
             break
 
-        # --- Train stage: REINFORCE on same GPU ---
+        # --- Train: RLEvolver loads its own model internally ---
         logger.info("\n── REINFORCE Training %d/%d ──", iteration + 1, NUM_RL_ITERS)
         from unittest.mock import MagicMock
         dummy_agent = MagicMock()
         dummy_agent.brain = MagicMock()
         dummy_agent.brain.swap_lora = MagicMock()
         dummy_agent.brain.system_prompt = SYSTEM_PROMPT
-
         rl.evolve(dummy_agent, lora_target, all_trajectories, metrics)
-        logger.info("Adapter saved. Freeing training GPU memory...")
 
     # ── Summary ──
     logger.info("\n" + "=" * 60)
