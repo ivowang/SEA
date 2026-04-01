@@ -77,8 +77,23 @@ class SFTEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        *,
+        model=None,
+        tokenizer=None,
         **kwargs,
     ) -> None:
+        """Run one SFT training step.
+
+        Args:
+            agent: The agent (used for system_prompt and optional hot-swap).
+            target: LoRATarget to update with the new adapter path.
+            trajectories: Collected trajectories to train on.
+            metrics: Metrics tracker.
+            model: Optional pre-loaded trainable model. If provided, the
+                evolver uses it directly and does NOT free it after training.
+                This enables single-load train/eval loops.
+            tokenizer: Required if model is provided.
+        """
         # 1. Filter successful trajectories
         good_trajs = [
             t for t in trajectories
@@ -102,30 +117,37 @@ class SFTEvolver(Evolver):
 
         dataset = to_hf_dataset(sft_data)
 
-        # 3. Load trainable model
+        # 3. Load or reuse model
         from sea.llm.hf_backend import HFTrainingBackend
+        owns_model = model is None
+        if model is not None and tokenizer is None:
+            raise ValueError("tokenizer is required when passing an external model")
 
-        hf = HFTrainingBackend(
-            model_name=self._model_name,
-            device=self._device,
-            torch_dtype=self._torch_dtype,
-            load_in_4bit=self._load_in_4bit,
-        )
-
-        # Get current adapter path from target's evolvable state
-        current_adapter = None
-        try:
-            state = target.get_evolvable_state()
-            if isinstance(state, Path) and state.exists():
-                current_adapter = state
-        except Exception:
-            pass
-
-        model = hf.get_trainable_model(
-            adapter_path=current_adapter,
-            lora_config=self._lora_config,
-        )
-        tokenizer = hf.get_tokenizer()
+        if owns_model:
+            hf = HFTrainingBackend(
+                model_name=self._model_name,
+                device=self._device,
+                torch_dtype=self._torch_dtype,
+                load_in_4bit=self._load_in_4bit,
+            )
+            current_adapter = None
+            try:
+                state = target.get_evolvable_state()
+                if isinstance(state, Path) and state.exists():
+                    current_adapter = state
+            except Exception:
+                pass
+            model = hf.get_trainable_model(
+                adapter_path=current_adapter,
+                lora_config=self._lora_config,
+            )
+            tokenizer = hf.get_tokenizer()
+        else:
+            hf = HFTrainingBackend(
+                model_name=self._model_name,
+                device=self._device,
+                torch_dtype=self._torch_dtype,
+            )
 
         # 4. Train with TRL SFTTrainer
         from trl import SFTTrainer, SFTConfig
@@ -148,7 +170,6 @@ class SFTEvolver(Evolver):
             completion_only_loss=True,  # only train on assistant responses
         )
 
-        # Apply custom model init if provided (e.g., O-LoRA setup)
         if self._model_init_fn:
             model = self._model_init_fn(model)
 
@@ -176,8 +197,12 @@ class SFTEvolver(Evolver):
             # 6. Update target
             target.set_evolvable_state(adapter_path)
 
-            # 7. Hot-swap on inference backend
-            agent.brain.swap_lora(str(adapter_path))
+            # 7. Hot-swap on inference backend (skip if brain is mock/unavailable)
+            if hasattr(agent.brain, 'swap_lora') and callable(agent.brain.swap_lora):
+                try:
+                    agent.brain.swap_lora(str(adapter_path))
+                except Exception:
+                    pass  # inference backend may not support LoRA
 
             # 8. Log metrics
             metrics.log({
@@ -188,7 +213,9 @@ class SFTEvolver(Evolver):
 
             logger.info("SFT complete: adapter saved to %s", adapter_path)
         finally:
-            del model, trainer
+            del trainer
+            if owns_model:
+                del model
             import gc
             gc.collect()
             torch.cuda.empty_cache()

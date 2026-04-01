@@ -130,10 +130,20 @@ class RLEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        *,
+        model=None,
+        tokenizer=None,
         **kwargs: Any,
     ) -> None:
+        """Run one RL training step.
+
+        Args:
+            model: Optional pre-loaded trainable model (avoids reload each iteration).
+            tokenizer: Required if model is provided.
+        """
         if self._algorithm in ("reinforce", "grpo"):
-            self._evolve_reinforce(agent, target, trajectories, metrics)
+            self._evolve_reinforce(agent, target, trajectories, metrics,
+                                   model=model, tokenizer=tokenizer)
         elif self._algorithm == "dpo":
             self._evolve_dpo(agent, target, trajectories, metrics)
         else:
@@ -149,14 +159,15 @@ class RLEvolver(Evolver):
         target: Evolvable,
         trajectories: list[Trajectory],
         metrics: MetricsTracker,
+        model=None,
+        tokenizer=None,
     ) -> None:
         """Offline REINFORCE using pre-collected trajectories.
 
-        Steps:
-        1. Convert trajectories → (context, action, advantage) triples
-        2. Tokenize context as prompt (labels=-100), action as completion
-        3. Compute loss = -sum(log_prob(action_tokens)) * advantage
-        4. Train with standard gradient descent + optional entropy bonus
+        Args:
+            model: Optional pre-loaded trainable model. If provided, reused
+                without loading/freeing (enables single-load loops).
+            tokenizer: Required if model is provided.
         """
         from transformers import Trainer, TrainingArguments
         from sea.llm.hf_backend import HFTrainingBackend
@@ -171,25 +182,36 @@ class RLEvolver(Evolver):
             logger.warning("No training data for REINFORCE")
             return
 
-        # 2. Load model with LoRA
-        hf = HFTrainingBackend(
-            model_name=self._model_name,
-            device=self._device,
-            torch_dtype=self._torch_dtype,
-            load_in_4bit=self._load_in_4bit,
-        )
-        current_adapter = None
-        try:
-            state = target.get_evolvable_state()
-            if isinstance(state, Path) and state.exists():
-                current_adapter = state
-        except Exception:
-            pass
-        model = hf.get_trainable_model(
-            adapter_path=current_adapter,
-            lora_config=self._lora_config,
-        )
-        tokenizer = hf.get_tokenizer()
+        # 2. Load or reuse model
+        owns_model = model is None
+        if model is not None and tokenizer is None:
+            raise ValueError("tokenizer is required when passing an external model")
+
+        if owns_model:
+            hf = HFTrainingBackend(
+                model_name=self._model_name,
+                device=self._device,
+                torch_dtype=self._torch_dtype,
+                load_in_4bit=self._load_in_4bit,
+            )
+            current_adapter = None
+            try:
+                state = target.get_evolvable_state()
+                if isinstance(state, Path) and state.exists():
+                    current_adapter = state
+            except Exception:
+                pass
+            model = hf.get_trainable_model(
+                adapter_path=current_adapter,
+                lora_config=self._lora_config,
+            )
+            tokenizer = hf.get_tokenizer()
+        else:
+            hf = HFTrainingBackend(
+                model_name=self._model_name,
+                device=self._device,
+                torch_dtype=self._torch_dtype,
+            )
 
         # 3. Tokenize into a dataset
         dataset = self._tokenize_reinforce_data(train_data, tokenizer)
@@ -272,7 +294,12 @@ class RLEvolver(Evolver):
             adapter_path = run_dir / "adapter"
             hf.save_adapter(model, adapter_path)
             target.set_evolvable_state(adapter_path)
-            agent.brain.swap_lora(str(adapter_path))
+
+            if hasattr(agent.brain, 'swap_lora') and callable(agent.brain.swap_lora):
+                try:
+                    agent.brain.swap_lora(str(adapter_path))
+                except Exception:
+                    pass
 
             metrics.log({
                 "rl/algorithm": "reinforce",
@@ -281,7 +308,9 @@ class RLEvolver(Evolver):
                 "rl/avg_advantage": sum(r["advantage"] for r in train_data) / len(train_data),
             })
         finally:
-            del model, trainer
+            del trainer
+            if owns_model:
+                del model
             import gc
             gc.collect()
             torch.cuda.empty_cache()

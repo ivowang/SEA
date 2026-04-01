@@ -3,12 +3,12 @@
 
 Demonstrates offline trajectory-level REINFORCE:
 - Phase A: Collect trajectories via API with high concurrency (no GPU)
-- Phase B: Single-GPU train/eval loop using HF model throughout
+- Phase B: Load model ONCE, then alternate train/eval on same model
 
 Unlike SFT (which only learns from successes), REINFORCE learns from
 BOTH successes and failures via advantage-weighted policy gradient.
 
-Only 1 GPU needed. Same HF model used for both training and evaluation.
+Only 1 GPU needed. Model loaded once — LoRA weights update in-place.
 
 Usage:
     python examples/rl_textcraft/run.py
@@ -34,11 +34,12 @@ from sea.agent.agent import SEAAgent
 from sea.agent.brain import LLMBrain
 from sea.agent.memory.working import WorkingMemory
 from sea.agent.planner import ReActPlanner
-from sea.core.types import Trajectory
+from sea.core.types import Trajectory, GenerationOutput
 from sea.env.benchmarks.textcraft import TextCraftEnv
 from sea.evolution.data.trajectory import TrajectoryCollector
 from sea.evolution.methods.rl import RLEvolver
 from sea.evolution.targets.lm_params import LoRATarget
+from sea.llm.hf_backend import HFTrainingBackend
 from sea.metrics.evaluator import Evaluator
 from sea.metrics.tracker import MetricsTracker
 from sea.metrics.reporters.console import ConsoleReporter
@@ -78,8 +79,10 @@ SYSTEM_PROMPT = (
 )
 
 
+# ── Helpers ─────────────────────────────────────────────────────────
+
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API with high concurrency (no GPU needed)."""
+    """Collect trajectories via API with high concurrency (no GPU)."""
     from sea.llm.api_backend import APIBackend
 
     logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
@@ -97,73 +100,58 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
         return TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
 
     trajectories = TrajectoryCollector.collect_parallel(
-        agent_factory=make_agent,
-        env_factory=make_env,
-        n=n,
-        max_workers=max_workers,
+        agent_factory=make_agent, env_factory=make_env,
+        n=n, max_workers=max_workers,
     )
     n_success = sum(1 for t in trajectories if t.success)
-    n_fail = len(trajectories) - n_success
-    logger.info("Collected: %d success, %d fail (both needed for REINFORCE)", n_success, n_fail)
+    logger.info("Collected: %d success, %d fail (both needed for REINFORCE)",
+                n_success, len(trajectories) - n_success)
     return trajectories
 
 
-def build_hf_agent(adapter_path: str | None = None) -> SEAAgent:
-    """Build agent using HF model for inference (same model used for training)."""
-    from sea.llm.hf_backend import HFTrainingBackend
+class HFInferenceBackend:
+    """Wrap a HF model as an LLMBackend for agent inference."""
 
-    logger.info("Loading HF model %s on %s (adapter: %s)...",
-                MODEL_NAME, GPU_DEVICE, adapter_path or "none")
-    hf = HFTrainingBackend(
-        model_name=MODEL_NAME,
-        device=GPU_DEVICE,
-        torch_dtype="bfloat16",
-    )
-    model = hf.get_trainable_model(adapter_path=adapter_path)
-    tokenizer = hf.get_tokenizer()
+    def __init__(self, model, tokenizer, device):
+        self._model = model
+        self._tokenizer = tokenizer
+        self._device = device
+        self.model_name = MODEL_NAME
 
-    class _HFInferenceBackend:
-        """Minimal LLMBackend wrapper around a HF model for inference."""
-        def __init__(self, model, tokenizer, device):
-            self._model = model
-            self._tokenizer = tokenizer
-            self._device = device
-            self.model_name = MODEL_NAME
+    def generate(self, messages, *, temperature=0.0, max_tokens=150,
+                 stop=None, lora_name=None, **kwargs):
+        if hasattr(self._tokenizer, "apply_chat_template"):
+            prompt = self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+        else:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            out = self._model.generate(
+                **inputs, max_new_tokens=max_tokens,
+                temperature=max(temperature, 0.01), do_sample=temperature > 0,
+                pad_token_id=self._tokenizer.eos_token_id,
+            )
+        text = self._tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        return GenerationOutput(text=text)
 
-        def generate(self, messages, *, temperature=0.0, max_tokens=150,
-                     stop=None, lora_name=None, **kwargs):
-            from sea.core.types import GenerationOutput
-            if hasattr(self._tokenizer, "apply_chat_template"):
-                prompt = self._tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True)
-            else:
-                prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+    def generate_batch(self, batches, **kw):
+        return [self.generate(msgs, **kw) for msgs in batches]
 
-            inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
-            with torch.no_grad():
-                out = self._model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    temperature=max(temperature, 0.01),
-                    do_sample=temperature > 0,
-                    pad_token_id=self._tokenizer.eos_token_id,
-                )
-            new_tokens = out[0][inputs["input_ids"].shape[1]:]
-            text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
-            return GenerationOutput(text=text)
+    def supports_lora(self): return False
+    def load_lora(self, *a, **kw): pass
+    def unload_lora(self, *a, **kw): pass
 
-        def generate_batch(self, batches, **kw):
-            return [self.generate(msgs, **kw) for msgs in batches]
 
-        def supports_lora(self): return False
-        def load_lora(self, *a, **kw): pass
-        def unload_lora(self, *a, **kw): pass
-
-    backend = _HFInferenceBackend(model, tokenizer, GPU_DEVICE)
+def make_agent_from_model(model, tokenizer) -> SEAAgent:
+    """Wrap existing HF model into an SEAAgent for evaluation."""
+    backend = HFInferenceBackend(model, tokenizer, GPU_DEVICE)
     brain = LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
                      default_max_tokens=150, default_temperature=0.0)
     return SEAAgent(brain=brain, memory=WorkingMemory(max_size=20), planner=ReActPlanner())
 
+
+# ── Main ────────────────────────────────────────────────────────────
 
 def main():
     logger.info("=" * 60)
@@ -182,59 +170,44 @@ def main():
     logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
                 len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
 
-    lora_target = LoRATarget(
-        base_model_name=MODEL_NAME,
-        adapter_dir=OUTPUT_DIR / "adapter_init",
-    )
+    # ── Phase B: Load model ONCE, then train/eval loop ──
+    logger.info("Loading model %s on %s...", MODEL_NAME, GPU_DEVICE)
+    hf = HFTrainingBackend(model_name=MODEL_NAME, device=GPU_DEVICE, torch_dtype="bfloat16")
+    model = hf.get_trainable_model(lora_config={"r": 16, "lora_alpha": 32,
+                                                  "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]})
+    tokenizer = hf.get_tokenizer()
+    logger.info("Model loaded.")
+
+    lora_target = LoRATarget(base_model_name=MODEL_NAME, adapter_dir=OUTPUT_DIR / "adapter_init")
 
     rl = RLEvolver(
-        model_name=MODEL_NAME,
-        algorithm="reinforce",
-        device=GPU_DEVICE,
-        learning_rate=1e-5,
-        num_epochs=1,
-        batch_size=4,
-        gradient_accumulation_steps=4,
-        max_seq_length=1024,
-        gamma=0.99,
-        entropy_coeff=0.01,
-        output_dir=str(OUTPUT_DIR),
-        torch_dtype="bfloat16",
+        model_name=MODEL_NAME, algorithm="reinforce", device=GPU_DEVICE,
+        learning_rate=1e-5, num_epochs=1, batch_size=4,
+        gradient_accumulation_steps=4, max_seq_length=1024,
+        gamma=0.99, entropy_coeff=0.01,
+        output_dir=str(OUTPUT_DIR), torch_dtype="bfloat16",
     )
 
     results_table = []
 
-    # ── Phase B: Train/Eval loop ──
     for iteration in range(NUM_RL_ITERS + 1):
-        # --- Eval: load HF model (with adapter if available) ---
-        adapter_path = None
-        if iteration > 0:
-            state = lora_target.get_evolvable_state()
-            adapter_path = str(state) if state and Path(str(state)).exists() else None
-
+        # --- Eval with current model ---
         label = "Baseline" if iteration == 0 else f"RL Iter {iteration}"
         logger.info("\n── %s: Evaluating ──", label)
-
-        agent = build_hf_agent(adapter_path=adapter_path)
+        model.eval()
+        agent = make_agent_from_model(model, tokenizer)
         sr = evaluator.evaluate(agent, [env]).success_rate
         logger.info("%s: success_rate=%.1f%%", label, sr * 100)
         results_table.append((label, sr))
 
-        del agent
-        gc.collect()
-        torch.cuda.empty_cache()
-
         if iteration == NUM_RL_ITERS:
             break
 
-        # --- Train: RLEvolver loads its own model internally ---
+        # --- Train on same model ---
         logger.info("\n── REINFORCE Training %d/%d ──", iteration + 1, NUM_RL_ITERS)
-        from unittest.mock import MagicMock
-        dummy_agent = MagicMock()
-        dummy_agent.brain = MagicMock()
-        dummy_agent.brain.swap_lora = MagicMock()
-        dummy_agent.brain.system_prompt = SYSTEM_PROMPT
-        rl.evolve(dummy_agent, lora_target, all_trajectories, metrics)
+        model.train()
+        rl.evolve(agent, lora_target, all_trajectories, metrics,
+                  model=model, tokenizer=tokenizer)
 
     # ── Summary ──
     logger.info("\n" + "=" * 60)
@@ -251,6 +224,9 @@ def main():
     logger.info("  SFT only learns from successes (imitation learning)")
     logger.info("  REINFORCE learns from both successes AND failures (policy gradient)")
 
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
     env.close()
     logger.info("Done! LoRA adapter saved to %s", OUTPUT_DIR)
 
