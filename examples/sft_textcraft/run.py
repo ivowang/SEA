@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python -u
 """Tutorial 3: SFT Evolution (LoRA Fine-Tuning) on TextCraft.
 
 Demonstrates supervised fine-tuning of a local LLM:
@@ -20,8 +20,12 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 import sys
 from pathlib import Path
+
+# Use local model cache — don't fetch from HuggingFace Hub
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -78,8 +82,58 @@ SYSTEM_PROMPT = (
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
+CACHE_FILE = Path(__file__).parent / "sft_trajectories_cache.json"
+
+
+def _save_trajectories(trajectories: list[Trajectory], path: Path) -> None:
+    """Save trajectories to JSON for reuse across runs."""
+    import json as _json
+    data = []
+    for t in trajectories:
+        data.append({
+            "task_id": t.task_id, "task_type": t.task_type,
+            "total_reward": t.total_reward, "success": t.success,
+            "metadata": t.metadata,
+            "steps": [{"observation": s.observation.text,
+                        "action": s.action.text, "action_type": s.action.action_type,
+                        "action_metadata": {k: str(v)[:300] for k, v in s.action.metadata.items()},
+                        "reward": s.reward, "done": s.done, "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
+                        } for s in t.steps],
+        })
+    path.write_text(_json.dumps(data, ensure_ascii=False, indent=1))
+    logger.info("Saved %d trajectories to %s", len(data), path)
+
+
+def _load_trajectories(path: Path) -> list[Trajectory]:
+    """Load trajectories from cached JSON."""
+    import json as _json
+    from sea.core.types import Step, Observation, Action
+    data = _json.loads(path.read_text())
+    trajs = []
+    for d in data:
+        steps = [Step(observation=Observation(text=s["observation"]),
+                       action=Action(text=s["action"], action_type=s.get("action_type", "text"),
+                                     metadata=s.get("action_metadata", {})),
+                       reward=s["reward"], done=s["done"], info=s.get("info", {}))
+                  for s in d["steps"]]
+        t = Trajectory(steps=steps, task_id=d["task_id"], task_type=d.get("task_type", ""),
+                       total_reward=d["total_reward"], success=d["success"],
+                       metadata=d.get("metadata", {}))
+        trajs.append(t)
+    logger.info("Loaded %d cached trajectories from %s", len(trajs), path)
+    return trajs
+
+
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API with high concurrency (no GPU)."""
+    """Collect trajectories via API, with local cache to avoid re-collection."""
+    # Check cache first
+    if CACHE_FILE.exists():
+        cached = _load_trajectories(CACHE_FILE)
+        if len(cached) >= n:
+            logger.info("Using cached data (%d trajectories, need %d)", len(cached), n)
+            return cached[:n]
+        logger.info("Cache has %d but need %d, collecting more...", len(cached), n)
+
     from sea.llm.api_backend import APIBackend
 
     logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
@@ -103,6 +157,9 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
     n_success = sum(1 for t in trajectories if t.success)
     logger.info("Collected %d trajectories (%d successful, %.0f%%)",
                 len(trajectories), n_success, 100 * n_success / max(len(trajectories), 1))
+
+    # Save to cache
+    _save_trajectories(trajectories, CACHE_FILE)
     return trajectories
 
 
