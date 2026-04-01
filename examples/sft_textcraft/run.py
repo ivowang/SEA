@@ -184,21 +184,13 @@ def main():
     for iteration in range(1, NUM_SFT_ITERS + 1):
         logger.info("\n── SFT Iteration %d/%d ──", iteration, NUM_SFT_ITERS)
 
-        # Train on all successful trajectories (cumulative)
+        # Train on successful API trajectories
         sft.evolve(agent, lora_target, successful, metrics)
 
         # Evaluate
         sr = evaluator.evaluate(agent, [env]).success_rate
         logger.info("Iter %d: success_rate=%.1f%%", iteration, sr * 100)
         results_table.append((f"SFT Iter {iteration}", sr))
-
-        # Collect more trajectories with the improved model for next round
-        logger.info("Collecting more trajectories with improved model...")
-        new_trajs = TrajectoryCollector().collect(agent, [env], n=20)
-        new_success = [t for t in new_trajs if t.success]
-        successful.extend(new_success)
-        logger.info("Added %d new successful trajectories (total: %d)",
-                    len(new_success), len(successful))
 
     # Summary
     logger.info("\n" + "=" * 60)

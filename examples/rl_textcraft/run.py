@@ -179,27 +179,21 @@ def main():
 
     results_table = [("Baseline", baseline_sr)]
 
+    n_success = sum(1 for t in all_trajectories if t.success)
+    avg_reward = sum(t.total_reward for t in all_trajectories) / max(len(all_trajectories), 1)
+    logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
+                len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
+
     for iteration in range(1, NUM_RL_ITERS + 1):
         logger.info("\n── REINFORCE Iteration %d/%d ──", iteration, NUM_RL_ITERS)
 
-        # Log trajectory stats
-        n_success = sum(1 for t in all_trajectories if t.success)
-        avg_reward = sum(t.total_reward for t in all_trajectories) / max(len(all_trajectories), 1)
-        logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
-                    len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
-
-        # Train with REINFORCE
+        # Train with REINFORCE on API-collected trajectories
         rl.evolve(agent, lora_target, all_trajectories, metrics)
 
         # Evaluate
         sr = evaluator.evaluate(agent, [env]).success_rate
         logger.info("Iter %d: success_rate=%.1f%%", iteration, sr * 100)
         results_table.append((f"RL Iter {iteration}", sr))
-
-        # Collect more trajectories with improved model
-        logger.info("Collecting more trajectories with improved model...")
-        new_trajs = TrajectoryCollector().collect(agent, [env], n=30)
-        all_trajectories.extend(new_trajs)
 
     # Summary
     logger.info("\n" + "=" * 60)
