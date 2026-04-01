@@ -149,25 +149,30 @@ class SFTEvolver(Evolver):
                 torch_dtype=self._torch_dtype,
             )
 
-        # 4. Train with TRL SFTTrainer
-        from trl import SFTTrainer, SFTConfig
+        # 4. Tokenize with explicit assistant-only label masking
+        import torch
+        from torch.utils.data import Dataset as TorchDataset
+        from transformers import Trainer, TrainingArguments
+        import torch.nn.functional as F
+
+        tokenized = self._tokenize_chat_data(sft_data, tokenizer)
+        logger.info("Tokenized %d samples (max_len=%d)", len(tokenized), self._max_length)
 
         self._train_step += 1
         run_dir = self._output_dir / f"step_{self._train_step}"
 
-        training_config = SFTConfig(
+        training_args = TrainingArguments(
             output_dir=str(run_dir),
             num_train_epochs=self._epochs,
             per_device_train_batch_size=self._batch_size,
             gradient_accumulation_steps=self._grad_accum,
             learning_rate=self._lr,
-            max_length=self._max_length,
             logging_steps=10,
             save_strategy="no",
             bf16=(self._torch_dtype == "bfloat16"),
             fp16=(self._torch_dtype == "float16"),
             remove_unused_columns=False,
-            completion_only_loss=True,  # only train on assistant responses
+            dataloader_pin_memory=False,
         )
 
         if self._model_init_fn:
@@ -177,11 +182,10 @@ class SFTEvolver(Evolver):
         if self._trainer_callbacks:
             trainer_kwargs["callbacks"] = self._trainer_callbacks
 
-        trainer = SFTTrainer(
+        trainer = Trainer(
             model=model,
-            args=training_config,
-            train_dataset=dataset,
-            processing_class=tokenizer,
+            args=training_args,
+            train_dataset=tokenized,
             **trainer_kwargs,
         )
 
@@ -219,3 +223,101 @@ class SFTEvolver(Evolver):
             import gc
             gc.collect()
             torch.cuda.empty_cache()
+
+    def _tokenize_chat_data(self, sft_data: list[dict], tokenizer) -> Any:
+        """Tokenize chat data with explicit assistant-only label masking.
+
+        For each sample, applies the chat template to the full conversation,
+        then sets labels=-100 for all non-assistant tokens. This ensures
+        the model only learns to produce assistant responses, not system
+        prompts or environment observations.
+
+        Uses the tokenizer's chat template to find assistant turn boundaries
+        via the <|im_start|>assistant marker.
+        """
+        import torch
+        import torch.nn.functional as F
+        from torch.utils.data import Dataset as TorchDataset
+
+        ASSISTANT_START = "<|im_start|>assistant\n"
+        IM_END = "<|im_end|>"
+
+        processed = []
+        for sample in sft_data:
+            messages = sample["messages"]
+
+            # Render full conversation with chat template
+            full_text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False,
+            )
+
+            # Tokenize
+            tokens = tokenizer(
+                full_text, truncation=True, max_length=self._max_length,
+                return_tensors="pt",
+            )
+            input_ids = tokens["input_ids"].squeeze(0)
+            attention_mask = tokens["attention_mask"].squeeze(0)
+
+            # Build labels: -100 everywhere except assistant content
+            labels = torch.full_like(input_ids, -100)
+
+            # Find assistant turn boundaries in the rendered text
+            pos = 0
+            while True:
+                start = full_text.find(ASSISTANT_START, pos)
+                if start == -1:
+                    break
+                content_start = start + len(ASSISTANT_START)
+                end = full_text.find(IM_END, content_start)
+                if end == -1:
+                    end = len(full_text)
+
+                # Map char positions to token positions
+                prefix_tokens = tokenizer(
+                    full_text[:content_start], add_special_tokens=False,
+                )["input_ids"]
+                content_tokens = tokenizer(
+                    full_text[:end], add_special_tokens=False,
+                )["input_ids"]
+
+                tok_start = len(prefix_tokens)
+                tok_end = len(content_tokens)
+
+                # Set labels for assistant content tokens
+                if tok_start < len(labels) and tok_end <= len(labels):
+                    labels[tok_start:tok_end] = input_ids[tok_start:tok_end]
+
+                pos = end + len(IM_END)
+
+            # Skip samples with no assistant labels
+            if (labels != -100).sum() == 0:
+                continue
+
+            processed.append({
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels,
+            })
+
+        # Pad to same length
+        if processed:
+            max_len = max(item["input_ids"].shape[0] for item in processed)
+            pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+            for item in processed:
+                cur_len = item["input_ids"].shape[0]
+                if cur_len < max_len:
+                    pad_len = max_len - cur_len
+                    item["input_ids"] = F.pad(item["input_ids"], (0, pad_len), value=pad_id)
+                    item["attention_mask"] = F.pad(item["attention_mask"], (0, pad_len), value=0)
+                    item["labels"] = F.pad(item["labels"], (0, pad_len), value=-100)
+
+        class _SFTDataset(TorchDataset):
+            def __init__(self, items):
+                self.items = items
+            def __len__(self):
+                return len(self.items)
+            def __getitem__(self, idx):
+                return self.items[idx]
+
+        return _SFTDataset(processed)

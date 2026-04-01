@@ -27,8 +27,8 @@ import os
 import sys
 from pathlib import Path
 
-# Use local model cache — don't fetch from HuggingFace Hub
-os.environ["HF_HUB_OFFLINE"] = "1"
+# Uncomment below to use offline mode (requires complete local model cache)
+# os.environ["HF_HUB_OFFLINE"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
