@@ -2,33 +2,34 @@
 """Tutorial 4: RL Evolution (REINFORCE) on TextCraft.
 
 Demonstrates offline trajectory-level REINFORCE:
-- Phase A: Collect trajectories via API (both successes and failures)
-- Phase B: Evaluate baseline local model (Qwen2.5-7B on vLLM)
-- Phase C: REINFORCE training loop (policy gradient from real rewards)
+- Phase A: Collect trajectories via API with high concurrency (no GPU)
+- Phase B: Train/eval loop on a single GPU — alternating between
+  REINFORCE training (HFTrainingBackend) and inference (vLLM)
 
 Unlike SFT (which only learns from successes), REINFORCE learns from
 BOTH successes and failures via advantage-weighted policy gradient.
 
-Expected result: success rate improves as the model learns to assign
-higher probability to actions in successful trajectories.
+Only 1 GPU needed. Training and inference share the same card.
 
 Usage:
     python examples/rl_textcraft/run.py
 
 Requires:
-    - GPU 4-5 for vLLM inference (TP=2)
-    - GPU 7 for REINFORCE training
+    - 1 GPU (default: cuda:7) with ~30GB free
     - Qwen/Qwen2.5-7B-Instruct model downloaded
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+import torch
 
 from sea.agent.agent import SEAAgent
 from sea.agent.brain import LLMBrain
@@ -48,9 +49,8 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-INFERENCE_DEVICE = "cuda:4"  # vLLM TP=2 across 4,5
-TRAINING_DEVICE = "cuda:7"
-NUM_COLLECT = 80       # need both successes AND failures
+GPU_DEVICE = "cuda:7"          # single GPU for both training and inference
+NUM_COLLECT = 80               # need both successes AND failures
 NUM_RL_ITERS = 3
 EVAL_EPISODES = 20
 NUM_TASKS = 50
@@ -80,10 +80,9 @@ SYSTEM_PROMPT = (
 
 
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API with high concurrency.
+    """Collect trajectories via API with high concurrency (no GPU needed).
 
     Both successes and failures are needed for REINFORCE.
-    Uses slightly higher temperature for diverse exploration.
     """
     from sea.llm.api_backend import APIBackend
 
@@ -113,15 +112,14 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
     return trajectories
 
 
-def build_local_agent(env: TextCraftEnv) -> SEAAgent:
-    """Build agent with local vLLM backend."""
+def load_vllm_agent(lora_path: str | None = None) -> SEAAgent:
+    """Load vLLM on the single GPU for evaluation."""
     from sea.llm.vllm_backend import VLLMBackend
 
-    logger.info("Phase B: Loading local model %s on vLLM (TP=2)...", MODEL_NAME)
     backend = VLLMBackend(
         model=MODEL_NAME,
-        device=INFERENCE_DEVICE,
-        tensor_parallel_size=2,
+        device=GPU_DEVICE,
+        tensor_parallel_size=1,
         enable_lora=True,
         max_lora_rank=32,
     )
@@ -130,6 +128,7 @@ def build_local_agent(env: TextCraftEnv) -> SEAAgent:
         system_prompt=SYSTEM_PROMPT,
         default_max_tokens=150,
         default_temperature=0.0,
+        lora_path=lora_path,
     )
     return SEAAgent(
         brain=brain,
@@ -138,34 +137,47 @@ def build_local_agent(env: TextCraftEnv) -> SEAAgent:
     )
 
 
+def shutdown_vllm(agent: SEAAgent) -> None:
+    """Shutdown vLLM and free GPU memory."""
+    try:
+        if hasattr(agent.brain.backend, 'llm'):
+            from vllm.distributed.parallel_state import destroy_model_parallel
+            del agent.brain.backend.llm
+            destroy_model_parallel()
+    except Exception:
+        pass
+    del agent
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("vLLM shutdown, GPU memory freed")
+
+
 def main():
     logger.info("=" * 60)
     logger.info("Tutorial 4: RL Evolution (REINFORCE)")
+    logger.info("Single GPU mode: %s", GPU_DEVICE)
     logger.info("=" * 60)
 
     env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
     evaluator = Evaluator(num_episodes_per_env=EVAL_EPISODES, eval_temperature=0.0)
     metrics = MetricsTracker(reporters=[ConsoleReporter()])
 
-    # Phase A: Collect diverse trajectories via API (high concurrency)
+    # ── Phase A: Collect training data via API ──
     all_trajectories = collect_api_data(NUM_COLLECT, max_workers=30)
+    n_success = sum(1 for t in all_trajectories if t.success)
+    avg_reward = sum(t.total_reward for t in all_trajectories) / max(len(all_trajectories), 1)
+    logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
+                len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
 
-    # Phase B: Load local model and evaluate baseline
-    agent = build_local_agent(env)
     lora_target = LoRATarget(
         base_model_name=MODEL_NAME,
         adapter_dir=OUTPUT_DIR / "adapter_init",
     )
 
-    logger.info("Evaluating baseline (no LoRA)...")
-    baseline_sr = evaluator.evaluate(agent, [env]).success_rate
-    logger.info("Baseline: success_rate=%.1f%%", baseline_sr * 100)
-
-    # Phase C: REINFORCE training loop
     rl = RLEvolver(
         model_name=MODEL_NAME,
         algorithm="reinforce",
-        device=TRAINING_DEVICE,
+        device=GPU_DEVICE,
         learning_rate=1e-5,
         num_epochs=1,
         batch_size=4,
@@ -177,25 +189,42 @@ def main():
         torch_dtype="bfloat16",
     )
 
-    results_table = [("Baseline", baseline_sr)]
+    results_table = []
 
-    n_success = sum(1 for t in all_trajectories if t.success)
-    avg_reward = sum(t.total_reward for t in all_trajectories) / max(len(all_trajectories), 1)
-    logger.info("Training data: %d trajectories (%.0f%% success, avg_reward=%.2f)",
-                len(all_trajectories), 100 * n_success / max(len(all_trajectories), 1), avg_reward)
+    # ── Phase B: Train/Eval loop (single GPU, alternating) ──
+    for iteration in range(NUM_RL_ITERS + 1):
+        # --- Eval stage: load vLLM on GPU ---
+        lora_path = None
+        if iteration > 0:
+            state = lora_target.get_evolvable_state()
+            lora_path = str(state) if state and Path(str(state)).exists() else None
 
-    for iteration in range(1, NUM_RL_ITERS + 1):
-        logger.info("\n── REINFORCE Iteration %d/%d ──", iteration, NUM_RL_ITERS)
+        label = "Baseline" if iteration == 0 else f"RL Iter {iteration}"
+        logger.info("\n── %s: Loading vLLM for evaluation ──", label)
+        agent = load_vllm_agent(lora_path=lora_path)
 
-        # Train with REINFORCE on API-collected trajectories
-        rl.evolve(agent, lora_target, all_trajectories, metrics)
-
-        # Evaluate
         sr = evaluator.evaluate(agent, [env]).success_rate
-        logger.info("Iter %d: success_rate=%.1f%%", iteration, sr * 100)
-        results_table.append((f"RL Iter {iteration}", sr))
+        logger.info("%s: success_rate=%.1f%%", label, sr * 100)
+        results_table.append((label, sr))
 
-    # Summary
+        # Shutdown vLLM to free GPU for training
+        shutdown_vllm(agent)
+
+        if iteration == NUM_RL_ITERS:
+            break
+
+        # --- Train stage: REINFORCE on same GPU ---
+        logger.info("\n── REINFORCE Training %d/%d ──", iteration + 1, NUM_RL_ITERS)
+        from unittest.mock import MagicMock
+        dummy_agent = MagicMock()
+        dummy_agent.brain = MagicMock()
+        dummy_agent.brain.swap_lora = MagicMock()
+        dummy_agent.brain.system_prompt = SYSTEM_PROMPT
+
+        rl.evolve(dummy_agent, lora_target, all_trajectories, metrics)
+        logger.info("Adapter saved. Freeing training GPU memory...")
+
+    # ── Summary ──
     logger.info("\n" + "=" * 60)
     logger.info("RESULTS SUMMARY")
     logger.info("=" * 60)

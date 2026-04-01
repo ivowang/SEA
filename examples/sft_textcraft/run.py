@@ -2,31 +2,32 @@
 """Tutorial 3: SFT Evolution (LoRA Fine-Tuning) on TextCraft.
 
 Demonstrates supervised fine-tuning of a local LLM:
-- Phase A: Collect training data via API (fast, high-quality trajectories)
-- Phase B: Evaluate baseline local model (Qwen2.5-7B on vLLM)
-- Phase C: SFT training loop (LoRA adapter on GPU)
+- Phase A: Collect training data via API with high concurrency (no GPU)
+- Phase B: Train/eval loop on a single GPU — alternating between
+  LoRA training (HFTrainingBackend) and inference (vLLM)
 
-Expected result: success rate of local model improves significantly after
-learning from API-generated demonstrations.
+Only 1 GPU needed. Training and inference share the same card by
+loading/unloading models between stages.
 
 Usage:
     python examples/sft_textcraft/run.py
 
 Requires:
-    - GPU 4-5 for vLLM inference (TP=2)
-    - GPU 6 for LoRA training
+    - 1 GPU (default: cuda:6) with ~30GB free
     - Qwen/Qwen2.5-7B-Instruct model downloaded
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+import torch
 
 from sea.agent.agent import SEAAgent
 from sea.agent.brain import LLMBrain
@@ -46,10 +47,9 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-INFERENCE_DEVICE = "cuda:4"  # vLLM tensor_parallel across 4,5
-TRAINING_DEVICE = "cuda:6"
-NUM_COLLECT = 50       # API trajectories for training data
-NUM_SFT_ITERS = 3     # SFT training iterations
+GPU_DEVICE = "cuda:6"          # single GPU for both training and inference
+NUM_COLLECT = 50               # API trajectories for training data
+NUM_SFT_ITERS = 3
 EVAL_EPISODES = 20
 NUM_TASKS = 50
 MAX_STEPS = 30
@@ -78,11 +78,7 @@ SYSTEM_PROMPT = (
 
 
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API with high concurrency.
-
-    Each worker thread gets its own agent + env instance.
-    The API backend's HTTP client is thread-safe.
-    """
+    """Collect trajectories via API with high concurrency (no GPU needed)."""
     from sea.llm.api_backend import APIBackend
 
     logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
@@ -111,15 +107,14 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
     return trajectories
 
 
-def build_local_agent(env: TextCraftEnv) -> SEAAgent:
-    """Build agent with local vLLM backend."""
+def load_vllm_agent(lora_path: str | None = None) -> SEAAgent:
+    """Load vLLM on the single GPU for evaluation."""
     from sea.llm.vllm_backend import VLLMBackend
 
-    logger.info("Phase B: Loading local model %s on vLLM (TP=2)...", MODEL_NAME)
     backend = VLLMBackend(
         model=MODEL_NAME,
-        device=INFERENCE_DEVICE,
-        tensor_parallel_size=2,
+        device=GPU_DEVICE,
+        tensor_parallel_size=1,
         enable_lora=True,
         max_lora_rank=32,
     )
@@ -128,6 +123,7 @@ def build_local_agent(env: TextCraftEnv) -> SEAAgent:
         system_prompt=SYSTEM_PROMPT,
         default_max_tokens=150,
         default_temperature=0.0,
+        lora_path=lora_path,
     )
     return SEAAgent(
         brain=brain,
@@ -136,40 +132,49 @@ def build_local_agent(env: TextCraftEnv) -> SEAAgent:
     )
 
 
+def shutdown_vllm(agent: SEAAgent) -> None:
+    """Shutdown vLLM and free GPU memory."""
+    try:
+        if hasattr(agent.brain.backend, 'llm'):
+            from vllm.distributed.parallel_state import destroy_model_parallel
+            del agent.brain.backend.llm
+            destroy_model_parallel()
+    except Exception:
+        pass
+    del agent
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("vLLM shutdown, GPU memory freed")
+
+
 def main():
     logger.info("=" * 60)
     logger.info("Tutorial 3: SFT Evolution (LoRA Fine-Tuning)")
+    logger.info("Single GPU mode: %s", GPU_DEVICE)
     logger.info("=" * 60)
 
     env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
     evaluator = Evaluator(num_episodes_per_env=EVAL_EPISODES, eval_temperature=0.0)
     metrics = MetricsTracker(reporters=[ConsoleReporter()])
 
-    # Phase A: Collect training data via API (high concurrency)
+    # ── Phase A: Collect training data via API ──
     all_trajectories = collect_api_data(NUM_COLLECT, max_workers=30)
     successful = [t for t in all_trajectories if t.success]
     logger.info("Using %d successful trajectories for SFT training", len(successful))
 
     if not successful:
-        logger.error("No successful trajectories collected. Cannot proceed with SFT.")
+        logger.error("No successful trajectories collected. Cannot proceed.")
         env.close()
         return
 
-    # Phase B: Load local model and evaluate baseline
-    agent = build_local_agent(env)
     lora_target = LoRATarget(
         base_model_name=MODEL_NAME,
         adapter_dir=OUTPUT_DIR / "adapter_init",
     )
 
-    logger.info("Evaluating baseline (no LoRA)...")
-    baseline_sr = evaluator.evaluate(agent, [env]).success_rate
-    logger.info("Baseline: success_rate=%.1f%%", baseline_sr * 100)
-
-    # Phase C: SFT training loop
     sft = SFTEvolver(
         model_name=MODEL_NAME,
-        device=TRAINING_DEVICE,
+        device=GPU_DEVICE,
         learning_rate=2e-5,
         num_epochs=3,
         batch_size=4,
@@ -179,20 +184,45 @@ def main():
         torch_dtype="bfloat16",
     )
 
-    results_table = [("Baseline", baseline_sr)]
+    results_table = []
 
-    for iteration in range(1, NUM_SFT_ITERS + 1):
-        logger.info("\n── SFT Iteration %d/%d ──", iteration, NUM_SFT_ITERS)
+    # ── Phase B: Train/Eval loop (single GPU, alternating) ──
+    for iteration in range(NUM_SFT_ITERS + 1):
+        # --- Eval stage: load vLLM on GPU ---
+        lora_path = None
+        if iteration > 0:
+            state = lora_target.get_evolvable_state()
+            lora_path = str(state) if state and Path(str(state)).exists() else None
 
-        # Train on successful API trajectories
-        sft.evolve(agent, lora_target, successful, metrics)
+        label = "Baseline" if iteration == 0 else f"SFT Iter {iteration}"
+        logger.info("\n── %s: Loading vLLM for evaluation ──", label)
+        agent = load_vllm_agent(lora_path=lora_path)
 
-        # Evaluate
         sr = evaluator.evaluate(agent, [env]).success_rate
-        logger.info("Iter %d: success_rate=%.1f%%", iteration, sr * 100)
-        results_table.append((f"SFT Iter {iteration}", sr))
+        logger.info("%s: success_rate=%.1f%%", label, sr * 100)
+        results_table.append((label, sr))
 
-    # Summary
+        # Shutdown vLLM to free GPU for training
+        shutdown_vllm(agent)
+
+        if iteration == NUM_SFT_ITERS:
+            break  # done, no more training
+
+        # --- Train stage: load HF model on same GPU ---
+        logger.info("\n── SFT Training %d/%d ──", iteration + 1, NUM_SFT_ITERS)
+        # SFTEvolver.evolve() loads model internally, trains, saves, frees
+        # We pass a dummy agent just for brain.swap_lora (which will be a no-op
+        # since vLLM is down; the adapter is saved to lora_target)
+        from unittest.mock import MagicMock
+        dummy_agent = MagicMock()
+        dummy_agent.brain = MagicMock()
+        dummy_agent.brain.swap_lora = MagicMock()  # skip hot-swap (no vLLM running)
+        dummy_agent.brain.system_prompt = SYSTEM_PROMPT
+
+        sft.evolve(dummy_agent, lora_target, successful, metrics)
+        logger.info("Adapter saved. Freeing training GPU memory...")
+
+    # ── Summary ──
     logger.info("\n" + "=" * 60)
     logger.info("RESULTS SUMMARY")
     logger.info("=" * 60)
