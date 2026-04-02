@@ -39,11 +39,11 @@ class ToolRegistry:
         """Get tool by name."""
         return self._tools.get(name)
 
-    def execute(self, name: str, **kwargs: Any) -> ToolResult:
+    def execute(self, tool_name: str, **kwargs: Any) -> ToolResult:
         """Execute a named tool."""
-        tool = self._tools.get(name)
+        tool = self._tools.get(tool_name)
         if tool is None:
-            return ToolResult(output=f"Unknown tool: {name}", success=False)
+            return ToolResult(output=f"Unknown tool: {tool_name}", success=False)
         try:
             return tool.execute(**kwargs)
         except Exception as e:
