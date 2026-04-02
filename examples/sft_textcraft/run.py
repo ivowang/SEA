@@ -3,9 +3,9 @@
 
 Demonstrates supervised fine-tuning of a local LLM:
 - Phase A: Collect training data via API with high concurrency (no GPU)
-- Phase B: Load model ONCE, then alternate train/eval on same model
+- Phase B: Single GPU, alternating: load model → eval → free → train → free → loop
 
-Only 1 GPU needed. Model loaded once — LoRA weights update in-place.
+Only 1 GPU needed. Model loaded/freed each stage (~10s overhead per load).
 
 Usage:
     python examples/sft_textcraft/run.py
@@ -23,9 +23,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-
-# Uncomment below to use offline mode (requires complete local model cache)
-# os.environ["HF_HUB_OFFLINE"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -79,6 +76,9 @@ SYSTEM_PROMPT = (
     "Action: get 1 oak logs"
 )
 
+LORA_CONFIG = {"r": 16, "lora_alpha": 32,
+               "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]}
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -86,7 +86,6 @@ CACHE_FILE = Path(__file__).parent / "sft_trajectories_cache.json"
 
 
 def _save_trajectories(trajectories: list[Trajectory], path: Path) -> None:
-    """Save trajectories to JSON for reuse across runs."""
     import json as _json
     data = []
     for t in trajectories:
@@ -97,7 +96,8 @@ def _save_trajectories(trajectories: list[Trajectory], path: Path) -> None:
             "steps": [{"observation": s.observation.text,
                         "action": s.action.text, "action_type": s.action.action_type,
                         "action_metadata": {k: str(v)[:300] for k, v in s.action.metadata.items()},
-                        "reward": s.reward, "done": s.done, "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
+                        "reward": s.reward, "done": s.done,
+                        "info": {k: v for k, v in s.info.items() if isinstance(v, (str, int, float, bool))},
                         } for s in t.steps],
         })
     path.write_text(_json.dumps(data, ensure_ascii=False, indent=1))
@@ -105,7 +105,6 @@ def _save_trajectories(trajectories: list[Trajectory], path: Path) -> None:
 
 
 def _load_trajectories(path: Path) -> list[Trajectory]:
-    """Load trajectories from cached JSON."""
     import json as _json
     from sea.core.types import Step, Observation, Action
     data = _json.loads(path.read_text())
@@ -125,17 +124,12 @@ def _load_trajectories(path: Path) -> list[Trajectory]:
 
 
 def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
-    """Collect trajectories via API, with local cache to avoid re-collection."""
-    # Check cache first
     if CACHE_FILE.exists():
         cached = _load_trajectories(CACHE_FILE)
         if len(cached) >= n:
             logger.info("Using cached data (%d trajectories, need %d)", len(cached), n)
             return cached[:n]
-        logger.info("Cache has %d but need %d, collecting more...", len(cached), n)
-
     from sea.llm.api_backend import APIBackend
-
     logger.info("Phase A: Collecting %d trajectories via API (%d concurrent)...", n, max_workers)
 
     def make_agent():
@@ -143,66 +137,84 @@ def collect_api_data(n: int, max_workers: int = 30) -> list[Trajectory]:
         return SEAAgent(
             brain=LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
                            default_max_tokens=150, default_temperature=0.0),
-            memory=WorkingMemory(max_size=20),
-            planner=ReActPlanner(),
-        )
+            memory=WorkingMemory(max_size=20), planner=ReActPlanner())
 
     def make_env():
         return TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
 
     trajectories = TrajectoryCollector.collect_parallel(
-        agent_factory=make_agent, env_factory=make_env,
-        n=n, max_workers=max_workers,
-    )
-    n_success = sum(1 for t in trajectories if t.success)
-    logger.info("Collected %d trajectories (%d successful, %.0f%%)",
-                len(trajectories), n_success, 100 * n_success / max(len(trajectories), 1))
-
-    # Save to cache
+        agent_factory=make_agent, env_factory=make_env, n=n, max_workers=max_workers)
     _save_trajectories(trajectories, CACHE_FILE)
     return trajectories
 
 
+def free_gpu():
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 class HFInferenceBackend:
     """Wrap a HF model as an LLMBackend for agent inference."""
-
     def __init__(self, model, tokenizer, device):
-        self._model = model
-        self._tokenizer = tokenizer
-        self._device = device
+        self._model, self._tokenizer, self._device = model, tokenizer, device
         self.model_name = MODEL_NAME
 
     def generate(self, messages, *, temperature=0.0, max_tokens=150,
                  stop=None, lora_name=None, **kwargs):
-        if hasattr(self._tokenizer, "apply_chat_template"):
-            prompt = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True)
-        else:
-            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        prompt = self._tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
         with torch.no_grad():
             out = self._model.generate(
                 **inputs, max_new_tokens=max_tokens,
                 temperature=max(temperature, 0.01), do_sample=temperature > 0,
-                pad_token_id=self._tokenizer.eos_token_id,
-            )
+                pad_token_id=self._tokenizer.eos_token_id)
         text = self._tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
         return GenerationOutput(text=text)
 
     def generate_batch(self, batches, **kw):
         return [self.generate(msgs, **kw) for msgs in batches]
-
     def supports_lora(self): return False
     def load_lora(self, *a, **kw): pass
     def unload_lora(self, *a, **kw): pass
 
 
-def make_agent_from_model(model, tokenizer) -> SEAAgent:
-    """Wrap existing HF model into an SEAAgent for evaluation."""
+def evaluate_model(adapter_path: str | None, env, evaluator, label: str) -> float:
+    """Load model (with optional adapter), evaluate, free GPU."""
+    logger.info("── %s: Loading model for eval ──", label)
+    hf = HFTrainingBackend(model_name=MODEL_NAME, device=GPU_DEVICE, torch_dtype="bfloat16")
+    model = hf.get_trainable_model(
+        adapter_path=adapter_path, lora_config=LORA_CONFIG if not adapter_path else None)
+    tokenizer = hf.get_tokenizer()
+    model.eval()
+    logger.info("Model loaded (%.1f GB). Evaluating...", torch.cuda.memory_allocated() / 1e9)
+
     backend = HFInferenceBackend(model, tokenizer, GPU_DEVICE)
     brain = LLMBrain(backend=backend, system_prompt=SYSTEM_PROMPT,
                      default_max_tokens=150, default_temperature=0.0)
-    return SEAAgent(brain=brain, memory=WorkingMemory(max_size=20), planner=ReActPlanner())
+    agent = SEAAgent(brain=brain, memory=WorkingMemory(max_size=20), planner=ReActPlanner())
+
+    sr = evaluator.evaluate(agent, [env]).success_rate
+    logger.info("%s: success_rate=%.1f%%", label, sr * 100)
+
+    del model, agent
+    free_gpu()
+    logger.info("GPU freed after eval.")
+    return sr
+
+
+def train_sft(sft: SFTEvolver, lora_target: LoRATarget,
+              trajectories: list[Trajectory], metrics: MetricsTracker) -> None:
+    """Load model, train SFT, save adapter, free GPU."""
+    logger.info("── Loading model for SFT training ──")
+    # SFTEvolver loads its own model internally when model= is not passed
+    from unittest.mock import MagicMock
+    dummy_agent = MagicMock()
+    dummy_agent.brain = MagicMock()
+    dummy_agent.brain.swap_lora = MagicMock()
+    dummy_agent.brain.system_prompt = SYSTEM_PROMPT
+    sft.evolve(dummy_agent, lora_target, trajectories, metrics)
+    logger.info("GPU freed after training.")
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -210,7 +222,7 @@ def make_agent_from_model(model, tokenizer) -> SEAAgent:
 def main():
     logger.info("=" * 60)
     logger.info("Tutorial 3: SFT Evolution (LoRA Fine-Tuning)")
-    logger.info("Single GPU: %s", GPU_DEVICE)
+    logger.info("Single GPU: %s (alternating load/free)", GPU_DEVICE)
     logger.info("=" * 60)
 
     env = TextCraftEnv(max_steps_val=MAX_STEPS, num_tasks=NUM_TASKS)
@@ -223,18 +235,9 @@ def main():
     logger.info("Using %d successful trajectories for SFT training", len(successful))
 
     if not successful:
-        logger.error("No successful trajectories collected. Cannot proceed.")
+        logger.error("No successful trajectories. Cannot proceed.")
         env.close()
         return
-
-    # ── Phase B: Load model ONCE, then train/eval loop ──
-    logger.info("Loading model %s on %s...", MODEL_NAME, GPU_DEVICE)
-    hf = HFTrainingBackend(model_name=MODEL_NAME, device=GPU_DEVICE, torch_dtype="bfloat16",
-                           load_in_4bit=True)  # 4-bit quantization to fit train+eval on 40GB
-    model = hf.get_trainable_model(lora_config={"r": 16, "lora_alpha": 32,
-                                                  "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]})
-    tokenizer = hf.get_tokenizer()
-    logger.info("Model loaded.")
 
     lora_target = LoRATarget(base_model_name=MODEL_NAME, adapter_dir=OUTPUT_DIR / "adapter_init")
 
@@ -247,24 +250,25 @@ def main():
 
     results_table = []
 
+    # ── Phase B: Alternating eval → train → eval → train → ... ──
     for iteration in range(NUM_SFT_ITERS + 1):
-        # --- Eval with current model ---
+        # Get adapter path (None for baseline)
+        adapter_path = None
+        if iteration > 0:
+            state = lora_target.get_evolvable_state()
+            adapter_path = str(state) if state and Path(str(state)).exists() else None
+
+        # Eval (loads model, evaluates, frees)
         label = "Baseline" if iteration == 0 else f"SFT Iter {iteration}"
-        logger.info("\n── %s: Evaluating ──", label)
-        model.eval()
-        agent = make_agent_from_model(model, tokenizer)
-        sr = evaluator.evaluate(agent, [env]).success_rate
-        logger.info("%s: success_rate=%.1f%%", label, sr * 100)
+        sr = evaluate_model(adapter_path, env, evaluator, label)
         results_table.append((label, sr))
 
         if iteration == NUM_SFT_ITERS:
             break
 
-        # --- Train on same model ---
+        # Train (SFTEvolver loads model internally, trains, saves, frees)
         logger.info("\n── SFT Training %d/%d ──", iteration + 1, NUM_SFT_ITERS)
-        model.train()
-        sft.evolve(agent, lora_target, successful, metrics,
-                   model=model, tokenizer=tokenizer)
+        train_sft(sft, lora_target, successful, metrics)
 
     # ── Summary ──
     logger.info("\n" + "=" * 60)
@@ -278,10 +282,6 @@ def main():
     improvement = results_table[-1][1] - results_table[0][1]
     logger.info("\nImprovement: %+.1f%%", improvement * 100)
 
-    # Cleanup
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
     env.close()
     logger.info("Done! LoRA adapter saved to %s", OUTPUT_DIR)
 
