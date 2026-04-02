@@ -274,6 +274,7 @@ class RLEvolver(Evolver):
             bf16=(self._torch_dtype == "bfloat16"),
             fp16=(self._torch_dtype == "float16"),
             dataloader_pin_memory=False,
+            gradient_checkpointing=True,
         )
 
         trainer = _ReinforceTrainer(

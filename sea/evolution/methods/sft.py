@@ -173,6 +173,7 @@ class SFTEvolver(Evolver):
             fp16=(self._torch_dtype == "float16"),
             remove_unused_columns=False,
             dataloader_pin_memory=False,
+            gradient_checkpointing=True,
         )
 
         if self._model_init_fn:

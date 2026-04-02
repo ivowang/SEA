@@ -237,8 +237,8 @@ def main():
 
     rl = RLEvolver(
         model_name=MODEL_NAME, algorithm="reinforce", device=GPU_DEVICE,
-        learning_rate=1e-5, num_epochs=1, batch_size=4,
-        gradient_accumulation_steps=4, max_seq_length=1024,
+        learning_rate=1e-5, num_epochs=1, batch_size=1,
+        gradient_accumulation_steps=8, max_seq_length=1024,
         gamma=0.99, entropy_coeff=0.01,
         output_dir=str(OUTPUT_DIR), torch_dtype="bfloat16",
     )

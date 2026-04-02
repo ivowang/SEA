@@ -243,8 +243,8 @@ def main():
 
     sft = SFTEvolver(
         model_name=MODEL_NAME, device=GPU_DEVICE,
-        learning_rate=2e-5, num_epochs=3, batch_size=4,
-        gradient_accumulation_steps=4, max_length=1024,
+        learning_rate=2e-5, num_epochs=3, batch_size=1,
+        gradient_accumulation_steps=8, max_length=1024,
         output_dir=str(OUTPUT_DIR), torch_dtype="bfloat16",
     )
 
